@@ -1,0 +1,35 @@
+---
+layout: page
+title: Tags
+---
+<style type="text/css">
+a:hover { text-decoration:underline; }
+</style>
+<div id='tags'>
+	<h2>标签：</h2>
+	&#8194;&#8194;&#8194;&#8194;
+	{% for tag in site.tags %}
+		<a href="#{{ tag[0] }}" title="{{ tag[0] }}" rel="{{ tag[1].size }}">{{ tag[0] }} ({{ tag[1].size }})</a>
+		&#8194; 
+	{% endfor %}
+</div>
+	<br>
+	<hr>
+	<br>
+<ul class="listing">
+	{% for tag in site.tags %}
+		<h4>
+			<li class="listing-seperator" id="{{ tag[0] }}">{{ tag[0] }}</li>
+		</h4>
+		{% for post in tag[1] %}
+			<li class="listing-item">
+				&#8194;&#8194;&#8194;&#8194;
+				<time datetime="{{ post.date | date:"%Y-%m-%d" }}">{{ post.date | date:"%Y-%m-%d" }}</time>
+				------ <a href="{{ site.url }}{{ post.url }}" title="{{ post.title }}">{{ post.title }}</a>
+			</li>
+		{% endfor %}
+		<br>
+	{% endfor %}
+</ul>
+	
+</div><!-- .entry -->

@@ -1,0 +1,24 @@
+<header id="head">
+
+		<div class='main'>
+		<ul>
+			<li class='logo'><a href="/" title="Home">{{ site.logoName }}</a></li>
+			<li><a href="/" title="Home">HOME</a></li>
+			<li><a href="/categories" title="Categories">CATEGORIES</a></li>
+			<li><a href="/tags" title="Tags">TAGS</a></li>
+			<li><a href="/about" title="About">ABOUT</a></li>
+		</ul>
+		<div class="social">
+			<a class="douban" href={{ site.douban }} title="豆瓣">豆瓣</a>
+			<a class="weibo" href={{ site.weibo }} title="微博">微博</a>
+			<a class="github" href={{ site.github }} title="GitHub">GitHub</a>
+			<a class="rss" href={{ site.feed }} title="RSS">RSS</a>
+		</div>
+		<form class="search" action="http://google.com/search" method="get">
+			<input class="alignright" type="text" name="q" results="0">
+			<input type="hidden" name="q" value="site:greeensy.github.com">
+		</form>
+		</div>
+		<!-- <ul class="index-top"> </ul> -->
+
+</header>

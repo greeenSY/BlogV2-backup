@@ -1,0 +1,67 @@
+---
+layout: page
+---
+<link rel="stylesheet" href="/js/prettify/prettify.css" />
+
+<div class="entry">
+
+    <h1 class="entry-title"><a href="{{ page.url }}" title="{{ page.title }}">{{ page.title }}</a></h1>
+	<p class="entry-date">{{ page.date|date:"%Y-%m-%d" }}</p>
+	
+    {{ content }}
+	
+	<p></p>
+	<hr>
+	<p></p>
+	分类：&#8194;  
+	{% for cat in page.categories %}
+		<a href="/categories/#{{cat}}" title="{{cat}}"  target="_blank">{{cat}}</a>
+		&#8194; 
+	{% endfor %}
+	<p></p>
+	标签：&#8194;  
+	{% for tag in page.tags %}
+		<a href="/tags/#{{tag}}" title="{{tag}}"  target="_blank">{{tag}}</a>
+		&#8194; 
+	{% endfor %}
+	<p></p>
+
+	<p></p>
+	
+	 <nav class="pagination-link">
+		{% if page.previous %}
+		<a class="prev" href="{{ page.previous.url }}" rel="bookmark">&laquo;&nbsp;{{ page.previous.title | truncatewords:5 }}</a>
+		{% endif %}
+		{% if page.next %}
+		<a class="next" href="{{ page.next.url }}" rel="bookmark">{{ page.next.title | truncatewords:5 }}&nbsp;&raquo;</a>
+		{% endif %}
+	 </nav>
+</div><!-- .entry -->
+<div id="disqus_container"> 
+    
+    <div class="shareto_toolbox">
+	<p>
+	<a class="shareto_button_tsina"></a>
+	<a class="shareto_button_kaixin001"></a>
+	<a class="shareto_button_renren"></a>
+	<a class="shareto_button_douban"></a>
+	<span class="shareto_separator">|</span>
+	<a href="http://shareto.com.cn/share.html" class="shareto_button_compact">更多</a>
+	</p>
+	</div>
+	<a href="#" class="right comment" onclick="return false;">点击查看评论</a>
+	<script type="text/javascript" src="http://s.shareto.com.cn/js/shareto_button.js" charset="utf-8"></script>
+	<!-- ShareTo Button END -->
+	<br> 
+	<br>	
+	<div id="disqus_thread"></div>
+</div> 
+
+<script src="/js/post.js" type="text/javascript"></script>
+<script type="text/javascript">
+    $.getScript('/js/prettify/prettify.js',function(){prettyPrint()});
+    //$.getScript('http://v2.jiathis.com/code/jia.js',function(){})
+</script>
+
+
+

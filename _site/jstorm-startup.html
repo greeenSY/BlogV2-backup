@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <!--
+    **
+    *
+    * Author:         greeenSY
+    * Contact:        sylovegreen@gmail.com
+    *
+    **
+  -->
+    <meta charset="utf-8" />
+    <title>
+		
+			Jstorm源码分析——Jstorm的启动过程 
+		
+			GreeenSY's blog
+	</title>
+    <meta name="author" content="GreeenSY" />
+    <meta name="description" content="" />
+    <meta name="viewport" content="width=device-width">
+    <link rel="stylesheet" href="/css/default.css" type="text/css" />
+    <link rel="alternate" type="application/atom+xml" title="Recent Entries" href="/atom.xml" />
+    <link rel="shortcut icon" href="/favicon.ico" type="image/x-icon" />
+    <script src="/js/jquery-1.7.1.min.js" type="text/javascript"></script>
+	<script type="text/javascript">
+    function loadScript(url, callback) {
+        var script = document.createElement('script')
+        script.type = 'text/javascript';
+        script.src = url;
+
+
+        if (script.readyState) { //for ie
+            script.onreadystatechange = function() {
+                if (script.readyState == 'loaded' || script.readyState == 'complete') {
+                    script.onreadystatechange = null;
+                    callback();
+                }
+            };
+        } else { //other browser
+            script.onload = function() {
+                callback();
+            };
+        }
+        document.getElementsByTagName('head')[0].appendChild(script);
+    }
+    </script>
+	<script>
+		(function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
+			(i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
+			m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
+			})(window,document,'script','//www.google-analytics.com/analytics.js','ga');
+			ga('create', 'UA-39609230-2', 'github.io');
+			ga('send', 'pageview');
+	</script>
+</head>
+<body>
+    <link rel="stylesheet" href="/js/prettify/prettify.css" />
+
+<header id="head">
+
+		<div class='main'>
+		<ul>
+			<li class='logo'><a href="/" title="Home">GreeenSY</a></li>
+			<li><a href="/" title="Home">HOME</a></li>
+			<li><a href="/categories" title="Categories">CATEGORIES</a></li>
+			<li><a href="/tags" title="Tags">TAGS</a></li>
+			<li><a href="/about" title="About">ABOUT</a></li>
+		</ul>
+		<div class="social">
+			<a class="douban" href=http://www.douban.com/people/chibao007/ title="豆瓣">豆瓣</a>
+			<a class="weibo" href=http://weibo.com/greenblueblue title="微博">微博</a>
+			<a class="github" href=https://github.com/greeensy title="GitHub">GitHub</a>
+			<a class="rss" href=/atom.xml title="RSS">RSS</a>
+		</div>
+		<form class="search" action="http://google.com/search" method="get">
+			<input class="alignright" type="text" name="q" results="0">
+			<input type="hidden" name="q" value="site:greeensy.github.com">
+		</form>
+		</div>
+		<!-- <ul class="index-top"> </ul> -->
+
+</header>
+
+
+<div id="content">
+    <link rel="stylesheet" href="/js/prettify/prettify.css" />
+
+<div class="entry">
+
+    <h1 class="entry-title"><a href="/jstorm-startup" title="Jstorm源码分析——Jstorm的启动过程">Jstorm源码分析——Jstorm的启动过程</a></h1>
+	<p class="entry-date">2014-08-06</p>
+	
+    <h2>Jstorm的启动命令</h2>
+
+<p>与Storm类似，Jstorm的启动过程需要两个部分：</p>
+
+<ul>
+<li>在nimbus 节点上执行 “nohup jstorm nimbus &amp;”</li>
+<li>在supervisor节点上执行 “nohup jstorm supervisor &amp;”</li>
+</ul>
+
+
+<p>bin/Jstorm是一个python写的脚本，是Jstorm的程序入口，Jstorm的启动以及Topology的提交等过程都需要用到这个脚本。</p>
+
+<h2>Nimbus</h2>
+
+<p>首先我们先看nimbus的启动。在bin/Jstorm脚本中，通过jstorm nimbus调用将触发脚本中的nimbus()方法，其中调用的是"com.alibaba.jstorm.daemon.nimbus.NimbusServer"。</p>
+
+<p>NimbusServer的工作包括：</p>
+
+<ul>
+<li>清除中断的Topology（删除本地目录/storm-local-dir/nimbus/topologyid/stormdis和zk上的/storm-zk-root/storms/topologyid）</li>
+<li>设置/storm-zk-root/storms/topology中的Topology状态为active</li>
+<li>启动一个monitor线程，每nimbus.monitor.reeq.secs检查/storm-zk-root/storms中所有Topology状态，如果Topology中有task是不活动的则讲Topology状态转换为monitor（这个状态下nimbus会重新分配workers）</li>
+<li>启动一个cleaner线程，每nimubs.cleanup.inbox.freq.secs清除无用的jar</li>
+</ul>
+
+
+<p>NimbusServer启动的时候，它首先创建一个nimbusServer的对象，并调用其launchServer(config,iNimbus)启动NimbusServer。</p>
+
+<p><img src="/images/jstorm/image017.png" alt="NimbusServer" /></p>
+
+<p>在launchServer中，它需要创建本地pids目录（createPid(conf)），初始化关闭nimbus的hook（initShutdownHook()，其实是启动线程调用cleanup()），准备nimbus工作槽（inimbus.prepare(conf, StormConfig.masterInimbus(conf))），创建NimbusData（com.alibaba.jstorm.daemon.nimbus.NimbusData，所有nimbus的数据），初始化followerTread（FollowerTread线程是com.alibaba.jstorm.schedule.FollowerRunnable，作用是定时去检查更新nimbus的工作情况，并且必要时替换新的nimbus），启动Httpserver，初始化initContainerHBThread（心跳HeartBeat相关），然后等待自己成为leader（在NimbusData中的tryTobeLeader()方法中会改变Leader的情况），如果是则载入配置（init(conf)），否则持续等待。</p>
+
+<p><img src="/images/jstorm/image018.png" alt="LaunchServer" /></p>
+
+<p>在init(Map conf)中，会初始化initTopologyAssign()、initTopologyStatus()（前者分配Topology并设置状态为active，后者将active转换为startup但是什么都不做），同时初始化Monitor线程（initMonitor(conf)）、Cleaner线程（initCleaner(conf)）分别承担Monitor和clean的工作，初始化一个serviceHandler对象，它会接受客户端传递过来的消息并调用相关方法进行Topology的提交等工作（见5.1），最后如果不是本地模式则还需要初始化分组（initGroup(conf)）和Thrift（initThrift(conf)）。</p>
+
+<p><img src="/images/jstorm/image019.png" alt="init" /></p>
+
+<h2>Supervisor</h2>
+
+<p>在bin/Jstorm脚本中，通过jstorm nimbus调用将触发脚本中的Supervisor()方法，其中调用的是" com.alibaba.jstorm.daemon.supervisor.Supervisor"。</p>
+
+<p>Supervisor是一个持续运行的主控线程（见com.alibaba.jstorm.daemon.supervisor下Supervisor.java），Supervisor的工作有：</p>
+
+<ul>
+<li>向zookeeper中写入Supervisor信息</li>
+<li>每supervisor.monitor.frequency.secs运行一次SynchronizeSupervisor，其中这个线程先下载新的Topology，而后释放没有用的worker，然后分配新的task到localstate，最后添加一个syncProcesses到队列中</li>
+<li>syncProcesses是具体的执行动作，它杀掉无用的worker，开始新的worker</li>
+<li>创建心跳线程，每supervisor.heartbeat.frequency.secs向zookeeper中写入一次信息。</li>
+</ul>
+
+
+<p>该线程启动的时候：</p>
+
+<ul>
+<li>调用mkSupervisor，启动一个supervisorManager。其中，首先清空本地/storm-local-dir/supervisor/tmp的文件，建立zk集群状态、localStat，获取Supervisor id，创建线程队列，创建心跳线程HeartBeat，创建SyncSupervisorEvent线程（用于从Zookeeper获取Event，详见“第6章Topology的提交与实例化过程”），创建和开始httpserver线程，最后返回一个SupervisorManager对象。这里注意，用到一个AsyncLoopThread（和AsyncLoopRunnable），这是一个特殊的一个线程，根据回调函数的返回值决定线程休眠时间，或者根据异常结束线程。</li>
+<li>Supervisor线程每1s查看一次SupervisorManager状态是否已经结束。Supervisor线程是一个主控线程，主要查看SupervisorManager状态的状态。具体的处理功能都由它所创建的其他线程完成。比如SyncSupervisorEvent线程每supervisor.monitor.frequency.secs s就运行一次（EventManager每隔一段时间加入一个event到队列中，同时其不断从队列里取出event进行处理）。</li>
+</ul>
+
+
+<p><img src="/images/jstorm/image020.png" alt="Supervisor" /></p>
+
+	
+	<p></p>
+	<hr>
+	<p></p>
+	分类：&#8194;  
+	
+		<a href="/categories/#bigdata" title="bigdata"  target="_blank">bigdata</a>
+		&#8194; 
+	
+	<p></p>
+	标签：&#8194;  
+	
+		<a href="/tags/#JStorm" title="JStorm"  target="_blank">JStorm</a>
+		&#8194; 
+	
+		<a href="/tags/#Storm" title="Storm"  target="_blank">Storm</a>
+		&#8194; 
+	
+		<a href="/tags/#Distributed System" title="Distributed System"  target="_blank">Distributed System</a>
+		&#8194; 
+	
+	<p></p>
+
+	<p></p>
+	
+	 <nav class="pagination-link">
+		
+		<a class="prev" href="/jstorm-status" rel="bookmark">&laquo;&nbsp;Jstorm源码分析——JStorm的系统状态</a>
+		
+		
+		<a class="next" href="/jstorm-topology-submit" rel="bookmark">Jstorm源码分析——Topology的提交和实例化过程&nbsp;&raquo;</a>
+		
+	 </nav>
+</div><!-- .entry -->
+<div id="disqus_container"> 
+    
+    <div class="shareto_toolbox">
+	<p>
+	<a class="shareto_button_tsina"></a>
+	<a class="shareto_button_kaixin001"></a>
+	<a class="shareto_button_renren"></a>
+	<a class="shareto_button_douban"></a>
+	<span class="shareto_separator">|</span>
+	<a href="http://shareto.com.cn/share.html" class="shareto_button_compact">更多</a>
+	</p>
+	</div>
+	<a href="#" class="right comment" onclick="return false;">点击查看评论</a>
+	<script type="text/javascript" src="http://s.shareto.com.cn/js/shareto_button.js" charset="utf-8"></script>
+	<!-- ShareTo Button END -->
+	<br> 
+	<br>	
+	<div id="disqus_thread"></div>
+</div> 
+
+<script src="/js/post.js" type="text/javascript"></script>
+<script type="text/javascript">
+    $.getScript('/js/prettify/prettify.js',function(){prettyPrint()});
+    //$.getScript('http://v2.jiathis.com/code/jia.js',function(){})
+</script>
+
+
+
+
+</div><!-- #content -->
+
+<footer id="about">
+    <div class="about-content">
+		<br>
+        <div class="clearfix">
+            <div class="about-left">
+                <h2>Friends</h2>
+<!--				<div class="weibo-con">
+                <iframe width="100%" height="75" class="share_self"  frameborder="0" scrolling="no" src="http://widget.weibo.com/weiboshow/index.php?language=&width=0&height=75&fansRow=2&ptype=1&speed=0&skin=5&isTitle=0&noborder=0&isWeibo=0&isFans=0&uid=1766883117&verifier=8a47f048&colors=d6f3f7,262626,666666,768fcf,ffffff&dpc=1"></iframe>
+				</div>
+-->           <p><a href="http://loyoen1990.blog.163.com/" class="external" target="_blank" title="loyoen">loyoen</a>
+			  <br/>
+              <a href="http://kymowind.blog.163.com/" class="external" target="_blank" title="Kymo">Kymo</a><br/>
+			  <a href="http://mawenhao19930620.blog.163.com/" class="external" target="_blank" title="GhostBoyZone">GhostBoyZone</a><br/>
+              </p>
+			</div>
+            <div class="about-left about-more">
+                <h2>Tools</h2>
+                    <a href="/wiki" title="Wiki"> Wiki </a><br/>
+					<a href="/404.html" title="404"> 404 </a><br/>
+					<a href="/test.html" title="Test"> Test </a><br/>
+            </div>
+            <div class="about-left about-more">
+                <h2>About</h2>
+                <p>
+                    格林布鲁布鲁<a href="http://weibo.com/greenblueblue" class="external" target="_blank" title="格林布鲁布鲁的新浪微博">@新浪微博</a><br/>
+                    Green<a href="http://www.douban.com/people/chibao007/" class="external" target="_blank" title="Green的豆瓣">@豆瓣</a><br/>
+                   GreeenSY<a href="https://github.com/greeenSY" class="external" target="_blank" title="greeenSY的github">@GitHub</a><br/>
+                </p>
+            </div>
+        </div>
+        <div class="copyright" style="text-align:center">
+            <p>Copyright © 2013   <a href="/about" title="greenSY" target="_blank">GreeenSY</a> </p>
+        </div>
+    </div>
+</footer>
+
+</body>
+</html>

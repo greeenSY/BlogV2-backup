@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <!--
+    **
+    *
+    * Author:         greeenSY
+    * Contact:        sylovegreen@gmail.com
+    *
+    **
+  -->
+    <meta charset="utf-8" />
+    <title>
+		
+			Jstorm源码分析——Tuple的发送、接收和处理 
+		
+			GreeenSY's blog
+	</title>
+    <meta name="author" content="GreeenSY" />
+    <meta name="description" content="" />
+    <meta name="viewport" content="width=device-width">
+    <link rel="stylesheet" href="/css/default.css" type="text/css" />
+    <link rel="alternate" type="application/atom+xml" title="Recent Entries" href="/atom.xml" />
+    <link rel="shortcut icon" href="/favicon.ico" type="image/x-icon" />
+    <script src="/js/jquery-1.7.1.min.js" type="text/javascript"></script>
+	<script type="text/javascript">
+    function loadScript(url, callback) {
+        var script = document.createElement('script')
+        script.type = 'text/javascript';
+        script.src = url;
+
+
+        if (script.readyState) { //for ie
+            script.onreadystatechange = function() {
+                if (script.readyState == 'loaded' || script.readyState == 'complete') {
+                    script.onreadystatechange = null;
+                    callback();
+                }
+            };
+        } else { //other browser
+            script.onload = function() {
+                callback();
+            };
+        }
+        document.getElementsByTagName('head')[0].appendChild(script);
+    }
+    </script>
+	<script>
+		(function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
+			(i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
+			m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
+			})(window,document,'script','//www.google-analytics.com/analytics.js','ga');
+			ga('create', 'UA-39609230-2', 'github.io');
+			ga('send', 'pageview');
+	</script>
+</head>
+<body>
+    <link rel="stylesheet" href="/js/prettify/prettify.css" />
+
+<header id="head">
+
+		<div class='main'>
+		<ul>
+			<li class='logo'><a href="/" title="Home">GreeenSY</a></li>
+			<li><a href="/" title="Home">HOME</a></li>
+			<li><a href="/categories" title="Categories">CATEGORIES</a></li>
+			<li><a href="/tags" title="Tags">TAGS</a></li>
+			<li><a href="/about" title="About">ABOUT</a></li>
+		</ul>
+		<div class="social">
+			<a class="douban" href=http://www.douban.com/people/chibao007/ title="豆瓣">豆瓣</a>
+			<a class="weibo" href=http://weibo.com/greenblueblue title="微博">微博</a>
+			<a class="github" href=https://github.com/greeensy title="GitHub">GitHub</a>
+			<a class="rss" href=/atom.xml title="RSS">RSS</a>
+		</div>
+		<form class="search" action="http://google.com/search" method="get">
+			<input class="alignright" type="text" name="q" results="0">
+			<input type="hidden" name="q" value="site:greeensy.github.com">
+		</form>
+		</div>
+		<!-- <ul class="index-top"> </ul> -->
+
+</header>
+
+
+<div id="content">
+    <link rel="stylesheet" href="/js/prettify/prettify.css" />
+
+<div class="entry">
+
+    <h1 class="entry-title"><a href="/jstorm-tuple" title="Jstorm源码分析——Tuple的发送、接收和处理">Jstorm源码分析——Tuple的发送、接收和处理</a></h1>
+	<p class="entry-date">2014-10-15</p>
+	
+    <h2>tuple的处理流程</h2>
+
+<p>Tuple的处理流程图如图1所示：</p>
+
+<p><img src="/images/jstorm/image045.png" alt="topologySubmit" /></p>
+
+<center>图1 Worker中tuple的处理流程</center>
+
+
+<h2>tuple的发送</h2>
+
+<p>首先Bolt在发射一个tuple的时候是调用OutputCollector（位置：backtype.storm.task）的emit()或者emitDirect()方法，这个OutputCollector一般定义在Bolt类中用于tuple的发送，OutputCollector.emit()（emitDirect()类似，后面不再赘述）会调用一个IOutputCollector接口的emit()方法，例如BoltCollector等类继承了这个接口。当Topology部署到服务端后，其实就是调用了BoltCollector的emit()方法，它由调用了boltEmit()方法，这里会先处理一些acker相关逻辑，然后调用taskTransfer进行tuple的发送。</p>
+
+<p><img src="/images/jstorm/image046.png" alt="bolt emit" /></p>
+
+<p>taskTransfer是一个TaskTransfer对象，这个类是task发送tuple的入口。transfer()中会首先对于目标task进行判断，如果是worker的内部task则将tuple放入innerTaskTransfer中属于这个taskid的发送队列，否则放入serializeQueue队列。这两者都是DisruptorQueue对象，在这个队列中，会定时批量处理其中的对象（consumeBatchWhenAvailable()和consumeBatchToCursor()）。</p>
+
+<p><img src="/images/jstorm/image047.png" alt="task transfer" /></p>
+
+<p>innerTaskTransfer是一个workerdata中生成的map结构，建立了taskid和worker内部发送队列的对应关系。它在BaseExecutors类被引用，在BoltExecutors或者SpoutExecutors对象生成时会建立和它的对应关系，在BaseExecutors对象构造时会把本task的接受队列disruptorRecvQueue加入本worker的innerTaskTransfer中。这样worker内部发送tuple时会直接放入目标task的接受队列中而不必调用socket方法。</p>
+
+<p><img src="/images/jstorm/image048.png" alt="innerTaskTransfer" /></p>
+
+<p>TaskTransfer类会维护一个serializeQueue队列和一个serializeThread线程。serializeThread会不断地调用serializeQueue的consumeBatchWhenAvailable(this)方法，这会促使其中的tuple被serializeThread.onEvent()处理。在onEvent()中， tuple会被序列化并放入对应workerData的transferQueue中交给worker处理。</p>
+
+<p><img src="/images/jstorm/image049.png" alt="comsume batch to cursor" /></p>
+
+<p><img src="/images/jstorm/image050.png" alt="transfer queue" /></p>
+
+<p><img src="/images/jstorm/image051.png" alt="onEvent" /></p>
+
+<p>到了worker这里，worker中的workerData里维护一个transferQueue来保存需要发送的tuple，同时worker会执行一个DrainerRunable线程负责发送（调用transferQueue的consumeBatchWhenAvailable()方法来启动自己的DrainerRunable.onEvent()），底层是利用了IConnection进行发送。这里不同的worker之间是在topology启动的时候就已经建立zeroMQ的链接，同时通过RefreshConnections线程（backtype.storm.messaging.IContext）不断地更新和维护。</p>
+
+<p>总结一些Twitter Storm对于tuple的处理/创建过程：</p>
+
+<ol>
+<li>Bolt创建一个tuple。</li>
+<li>Worker把tuple, 以及这个tuple要发送的地址(task-id)组成一个对象(task-id, tuple)放进待发送队列(LinkedBlockingQueue).</li>
+<li>一个单独的线程(async-loop所创建的线程）会取出发送队列里面的每个tuple来处，Worker创建从当前task到目的task的zeromq连接。序列化这个tuple并且通过这个zeromq的连接来发送这个tuple。</li>
+</ol>
+
+
+<h2>tuple的接受和处理</h2>
+
+<p>每个worker在实例化的时候都会生成对应的task，而后task.mk_executors()会根据类型分别创建新的bolt或者spout（BoltExecutors或SpoutExecutors），Executors是独立的线程在运行。</p>
+
+<p>以BoltExecutors（com.alibaba.jstorm.task.execute）为例，它的线程函数中有两个工作：监控是否超时并返回acker一个fail信号，激活接受队列（disruptorRecvQueue，DisruptorQueue对象）消耗队列中的项。</p>
+
+<p><img src="/images/jstorm/image052.png" alt="BoltExecutors" /></p>
+
+<p>之后disruptorRecvQueue会通过consumeBatchWhenAvailable()和consumeBatchToCursor()来调用BoltExecutors的onEvent()对接受到的tuple进行处理。</p>
+
+<p>在onEvent()中会调用bolt.execute(tuple)进行tuple的处理，即用户应用程序中bolt定义的处理内容。</p>
+
+<p><img src="/images/jstorm/image053.png" alt="onEvent" /></p>
+
+<p>Spout同理，见SpoutExecutors.java。</p>
+
+<p>对于disruptorRecvQueue队列，它定义在了BaseExecutors（BoltExecutors和SpoutExecutors继承自这个类）中，通过RecvRunnable执行在一个独立线程中，这个线程需要维护这个接受队列，同时接受tuple并放入队列。RecvRunnabel线程中会循环调用recv()方法，当有tuple被收到后放入队列中。</p>
+
+<p><img src="/images/jstorm/image054.png" alt="recv Runnable" /></p>
+
+<p>在recv()中，通过ser_msg = puller.recv(0)得到接受内容，如果为空则返回，如果长度为1则是状态改变的消息，如果长度大于1则为tuple，序列化后返回由RecvRunnable放入队列。puller是一个IConnection接口，IConnection由zeroMQ、Netty等实现，即通过ZeroMQ或Netty等消息框架的recv()来获取tuple结果。</p>
+
+<p> <img src="/images/jstorm/image055.png" alt="recv" /></p>
+
+<p>其实zeroMq的底层是利用了socket的方式实现。</p>
+
+<p><img src="/images/jstorm/image056.png" alt="zeroMq" /></p>
+
+	
+	<p></p>
+	<hr>
+	<p></p>
+	分类：&#8194;  
+	
+		<a href="/categories/#bigdata" title="bigdata"  target="_blank">bigdata</a>
+		&#8194; 
+	
+	<p></p>
+	标签：&#8194;  
+	
+		<a href="/tags/#JStorm" title="JStorm"  target="_blank">JStorm</a>
+		&#8194; 
+	
+		<a href="/tags/#Storm" title="Storm"  target="_blank">Storm</a>
+		&#8194; 
+	
+		<a href="/tags/#Distributed System" title="Distributed System"  target="_blank">Distributed System</a>
+		&#8194; 
+	
+	<p></p>
+
+	<p></p>
+	
+	 <nav class="pagination-link">
+		
+		<a class="prev" href="/jstorm-topology-submit" rel="bookmark">&laquo;&nbsp;Jstorm源码分析——Topology的提交和实例化过程</a>
+		
+		
+		<a class="next" href="/jstorm-ack" rel="bookmark">Jstorm源码分析——Ack机制&nbsp;&raquo;</a>
+		
+	 </nav>
+</div><!-- .entry -->
+<div id="disqus_container"> 
+    
+    <div class="shareto_toolbox">
+	<p>
+	<a class="shareto_button_tsina"></a>
+	<a class="shareto_button_kaixin001"></a>
+	<a class="shareto_button_renren"></a>
+	<a class="shareto_button_douban"></a>
+	<span class="shareto_separator">|</span>
+	<a href="http://shareto.com.cn/share.html" class="shareto_button_compact">更多</a>
+	</p>
+	</div>
+	<a href="#" class="right comment" onclick="return false;">点击查看评论</a>
+	<script type="text/javascript" src="http://s.shareto.com.cn/js/shareto_button.js" charset="utf-8"></script>
+	<!-- ShareTo Button END -->
+	<br> 
+	<br>	
+	<div id="disqus_thread"></div>
+</div> 
+
+<script src="/js/post.js" type="text/javascript"></script>
+<script type="text/javascript">
+    $.getScript('/js/prettify/prettify.js',function(){prettyPrint()});
+    //$.getScript('http://v2.jiathis.com/code/jia.js',function(){})
+</script>
+
+
+
+
+</div><!-- #content -->
+
+<footer id="about">
+    <div class="about-content">
+		<br>
+        <div class="clearfix">
+            <div class="about-left">
+                <h2>Friends</h2>
+<!--				<div class="weibo-con">
+                <iframe width="100%" height="75" class="share_self"  frameborder="0" scrolling="no" src="http://widget.weibo.com/weiboshow/index.php?language=&width=0&height=75&fansRow=2&ptype=1&speed=0&skin=5&isTitle=0&noborder=0&isWeibo=0&isFans=0&uid=1766883117&verifier=8a47f048&colors=d6f3f7,262626,666666,768fcf,ffffff&dpc=1"></iframe>
+				</div>
+-->           <p><a href="http://loyoen1990.blog.163.com/" class="external" target="_blank" title="loyoen">loyoen</a>
+			  <br/>
+              <a href="http://kymowind.blog.163.com/" class="external" target="_blank" title="Kymo">Kymo</a><br/>
+			  <a href="http://mawenhao19930620.blog.163.com/" class="external" target="_blank" title="GhostBoyZone">GhostBoyZone</a><br/>
+              </p>
+			</div>
+            <div class="about-left about-more">
+                <h2>Tools</h2>
+                    <a href="/wiki" title="Wiki"> Wiki </a><br/>
+					<a href="/404.html" title="404"> 404 </a><br/>
+					<a href="/test.html" title="Test"> Test </a><br/>
+            </div>
+            <div class="about-left about-more">
+                <h2>About</h2>
+                <p>
+                    格林布鲁布鲁<a href="http://weibo.com/greenblueblue" class="external" target="_blank" title="格林布鲁布鲁的新浪微博">@新浪微博</a><br/>
+                    Green<a href="http://www.douban.com/people/chibao007/" class="external" target="_blank" title="Green的豆瓣">@豆瓣</a><br/>
+                   GreeenSY<a href="https://github.com/greeenSY" class="external" target="_blank" title="greeenSY的github">@GitHub</a><br/>
+                </p>
+            </div>
+        </div>
+        <div class="copyright" style="text-align:center">
+            <p>Copyright © 2013   <a href="/about" title="greenSY" target="_blank">GreeenSY</a> </p>
+        </div>
+    </div>
+</footer>
+
+</body>
+</html>

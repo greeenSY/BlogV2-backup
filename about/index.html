@@ -1,0 +1,46 @@
+---
+layout: page
+title: About greeenSY
+img: /images/mogu.jpg
+---
+
+
+<div class="myinfo">
+    <div class="basic_info">
+
+        <p>嘿，朋友！</p>
+
+        <p>这里是<a href="/">{{ site.author.name }}</a>的博客。</p>
+
+        <p>感谢关注！</p>
+        <h3>想要知道我更多？</h3>
+        <ul>
+        <li><a href="{{ site.douban }}" class="external" target="_blank">豆瓣</a></li>
+        <li><a href="{{ site.weibo }}" class="external" target="_blank">微博</a></li>
+        <li><a href="{{ site.github }}" class="external" target="_blank">GitHub</a></li>
+        </ul>
+        <br>
+        <h3>联系我：</h3>
+
+        <a href="" title="邮箱" onclick="alert('{{ site.author.name }} 的Gmail:\n{{ site.author.email }}');return false;">我的Email</a>
+    </div>
+
+    <div class="douban_info">
+        <h3>最近看过：</h3>
+        <div class="douban_show">
+            <script type="text/javascript" src="http://www.douban.com/service/badge/chibao007/?selection=latest&amp;picsize=small&amp;hideself=on&amp;show=collection&amp;n=10&amp;hidelogo=on&amp;cat=drama%7Cmovie%7Cbook%7Cmusic&amp;columns=5"></script>
+        </div>
+        <div class="douban_music">
+            <script src="http://img3.douban.com/f/shire/09bc4f2fa7258e8ed008f5941d6bdfd44f2ea8b2/js/radiowidget_plain.js?doubanid=1786019&maxresults=10&color=0"></script>
+        </div>
+    </div>
+</div>
+<br>
+<br>
+<div id="disqus_thread"></div>
+</div> 
+
+<script type="text/javascript">
+    window.disqus_shortname = 'greeenSY'; // required: replace example with your forum shortname
+    $.getScript('http://' + disqus_shortname + '.disqus.com/embed.js');
+</script>

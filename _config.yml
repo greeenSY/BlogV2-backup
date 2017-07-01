@@ -1,0 +1,19 @@
+baseurl: /
+auto: true
+markdown: rdiscount
+pygments: true
+permalink: /:title
+paginate: 6 
+
+title:            GreeenSY's blog
+url:              http://greeensy.github.io
+feed:             /atom.xml
+author:
+    name:         GreeenSY
+    email:        sylovegreen@gmail.com
+
+logoName:         GreeenSY
+github:           https://github.com/greeensy
+weibo:            http://weibo.com/greenblueblue
+douban:           http://www.douban.com/people/chibao007/
+github:           https://github.com/greeensy

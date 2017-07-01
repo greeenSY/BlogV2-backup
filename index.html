@@ -1,0 +1,52 @@
+---
+layout: page
+---
+<div class="index-artical">
+	<ul class="index-mid"> </ul>
+	<ul class="index-right">
+	<br>
+	
+	{% for rpost in paginator.posts %}	
+        <li>
+            <h2>
+            	<a href="{{ rpost.url }}">{{ rpost.title }}</a>
+            </h2>
+			<span class="title-desc">{{ rpost.description }}</span>
+        </li>
+    {% endfor %}
+	{% if paginator.total_pages > 1 %}
+		        <nav id="pagination">
+		            <ul class="pagination">
+		                {% for page in (1..paginator.total_pages) %}
+		                    {% if page == paginator.page %}
+		                        <li class="current"><a href="javascript:void(0);">{{ page }}</a></li>
+		                    {% else %}
+		                        <li><a href="/{%if page > 1 %}page{{ page }}/{% endif %}">{{ page }}</a></li>
+		                    {% endif %}
+		                {% endfor %}
+		            </ul>
+		        </nav>
+		    {% endif %}		
+    </ul>
+
+    
+	<!--
+	<ul class="index-right">
+    {% for post in site.categories.theme%}
+        <li>
+            <h2>
+            	<a href="{{ post.url }}"><img src="{{ post.img }}" width=200 height=120/></a>
+            </h2>
+            <span class="title-desc">{{ post.description }}</span>
+        </li>
+    {% endfor %}
+    </ul>
+	--!>
+</div>
+
+<script type="text/javascript">
+$(function(){
+    var height = $('.index-artical').height();
+    $('.index-mid').height(height-90);
+});
+</script>

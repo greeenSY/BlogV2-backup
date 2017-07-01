@@ -1,0 +1,1258 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+ 
+   <title>GreeenSY's blog</title>
+   <link href="http://greeensy.github.io/atom.xml" rel="self" type="application/atom+xml"/>
+   <link href="http://greeensy.github.io" rel="alternate" type="text/html" />
+   <updated>2016-10-22T15:36:50+08:00</updated>
+   <id>http://greeensy.github.io</id>
+   <author>
+     <name>GreeenSY</name>
+     <email>sylovegreen@gmail.com</email>
+   </author>
+
+   
+   <entry>
+     <title>Jstorm的Nimbus HA机制</title>
+     <link href="http://greeensy.github.io/jstorm-nimbus-ha"/>
+     <updated>2015-03-19T00:00:00+08:00</updated>
+     <id>http://greeensy.github.io/jstorm-nimbus-ha</id>
+     <content type="html">&lt;h2&gt;storm的nimbus 单点问题&lt;/h2&gt;
+
+&lt;p&gt;众所周知，在Storm集群系统中，zookeeper和supervisor都是多节点，任意一个zookeeper节点宕机或supervisor节点宕机均不会对系统整体运行造成影响，但 nimbus和ui都是单节点 。ui的单节点对系统的稳定运行没有影响，仅提供storm-ui页面展示统计信息。但nimbus承载了集群的许多工作，如果nimbus单节点宕机，将会使系统整体的稳定运行造成极大风险。因此解决nimbus的单点问题，将会更加完善storm集群的稳定性。&lt;/p&gt;
+
+&lt;p&gt;虽然Nimbus在设计上是无状态的，进程在挂掉之后立即重启并不会对Storm集群产生太大的影响，但如果在Nimbus挂掉期间再有一个Supervisor节点出现问题，那么Supervisor所负责的任务将无法分配到其它的节点，集群也将处于不稳定的状态。&lt;/p&gt;
+
+&lt;p&gt;因此解决Storm集群的Nimbus单点问题也是很必要的。&lt;/p&gt;
+
+&lt;h2&gt;HA机制&lt;/h2&gt;
+
+&lt;p&gt;HA机制指的是双机主备模式，如果主机出现宕机的情况，备用机会顶替上来，从而使得整个集群继续工作。&lt;/p&gt;
+
+&lt;p&gt;但Storm本身并不支持HA模式，但是在Jstorm中Nimbus 实现HA：当一台nimbus挂了，自动热切到备份nimbus。&lt;/p&gt;
+
+&lt;h2&gt;Jstorm的HA实现&lt;/h2&gt;
+
+&lt;p&gt;在Jstorm中我们可以启动任意多个Nimbus，Nimbus进程启动后即通过抢占zookeeper的InterProcessMutex锁来竞争成为leader，没有抢到锁的非leader Nimbus进程一直处于block状态，不进行后续工作，当leader宕机时，抢占到锁的下一个Nimbus节点成为新leader，由此解决了Nimbus的单节点问题。&lt;/p&gt;
+
+&lt;p&gt;（之前没有调研，我本来单纯的认为Nimbus是配合zookeeper中的心跳来查看nimbus的状态和启动备用nimbus的。。。。）&lt;/p&gt;
+
+&lt;p&gt;下面我们看一下Nimbus启动时的源码：&lt;/p&gt;
+
+&lt;p&gt; &lt;img src=&quot;/images/jstorm/NimbusHA.png&quot; alt=&quot;NimbusHA&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;Jstorm的HA机制基本就是这样。&lt;/p&gt;
+</content>
+   </entry>
+   
+   <entry>
+     <title>Jstorm源码分析——Ack机制</title>
+     <link href="http://greeensy.github.io/jstorm-ack"/>
+     <updated>2014-11-21T00:00:00+08:00</updated>
+     <id>http://greeensy.github.io/jstorm-ack</id>
+     <content type="html">&lt;h2&gt;可靠性机制原理说明&lt;/h2&gt;
+
+&lt;p&gt;Storm一个很重要的特性是它能够保证你发出的每条消息都会被完整处理， 完整处理的意思是指：一个tuple被完全处理的意思是： 这个tuple以及由这个tuple所导致的所有的tuple都被成功处理。而一个tuple会被认为处理失败了如果这个消息在timeout所指定的时间内没有成功处理, 而这个timetout可以通过Config.TOPOLOGY_MESSAGE_TIMEOUT_SECS来指定。也就是说对于任何一个spout-tuple以及它的所有子孙到底处理成功失败与否我们都会得到通知。storm里面有个专门的acker来跟踪所有tuple的完成情况。&lt;/p&gt;
+
+&lt;p&gt;在Spout的接口ISpout中，需要实现的参数有：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;public interface ISpout extends Serializable {
+    void open(Map conf, TopologyContext context,
+              SpoutOutputCollector collector);
+    void close();
+    void nextTuple();
+    void ack(Object msgId);
+    void fail(Object msgId);
+}
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;Ack和fail分别是在ack成功和失败后执行的函数。&lt;/p&gt;
+
+&lt;p&gt;发射tuple的时候spout会提供一个message-id, 后面我们通过这个message-id来追踪这个tuple，如果没有message-id则不会启动acker机制。接下来， 这个发射的tuple被传送到消息处理者bolt那里， storm会跟踪由此所产生的这课tuple树。如果storm检测到一个tuple被完全处理了， 那么storm会以最开始的那个message-id作为参数去调用消息源的ack方法；反之storm会调用spout的fail方法。值得注意的一点是， storm调用ack或者fail的task始终是产生这个tuple的那个task。所以如果一个spout被分成很多个task来执行， 消息执行的成功失败与否始终会通知最开始发出tuple的那个task。&lt;/p&gt;
+
+&lt;p&gt;对于一个storm的用户，在生成一个tuple的时候需要通知storm，在完成处理一个tuple以后要通知storm。由一个tuple产生一个新的tuple称为anchoring。发射一个新tuple的同时也就完成了一次anchoring，例如在：&lt;em&gt;collector.emit(tuple, new Values(word))，这样把输入tuple和输出tuple进行了anchoring，即把新的tuple加入到了tuple的处理树中。而&lt;/em&gt;collector.emit(new Values(word))则不会产生anchoring关系（unanchoring）。&lt;/p&gt;
+
+&lt;p&gt;一个输出tuple可以被anchoring到多个输入tuple上，这种方式在stream合并或者stream聚合的时候很有用，一个多入口的tuple被处理失败的话，它对应的输入tuple都要被重新执行。例如：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;List&amp;lt;Tuple&amp;gt; anchors = new ArrayList&amp;lt;Tuple&amp;gt;();
+anchors.add(tuple1);
+anchors.add(tuple2);
+_collector.emit(anchors, new Values(1, 2, 3));
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;多入口tuple把这个新tuple加到了多个tuple树里面去了。&lt;/p&gt;
+
+&lt;p&gt;我们通过anchoring来构造这个tuple树，最后一件要做的事情是在你处理完当个tuple的时候告诉storm,  通过OutputCollector类的ack和fail方法来做。每个你处理的tuple， 必须被ack或者fail。因为storm追踪每个tuple要占用内存。所以如果你不ack/fail每一个tuple， 那么最终你会看到OutOfMemory错误。&lt;/p&gt;
+
+&lt;p&gt;大多数Bolt遵循这样的规律：读取一个tuple；发射一些新的tuple；在execute的结束的时候ack这个tuple。这些Bolt往往是一些过滤器或者简单函数。Storm为这类规律封装了一个BasicBolt类。发送到BasicOutputCollector的tuple会自动和输入tuple相关联，而在execute方法结束的时候那个输入tuple会被自动ack的。（作为对比，处理聚合和合并的bolt往往要处理一大堆的tuple之后才能被ack， 而这类tuple通常都是多输入的tuple， 所以这个已经不是IBasicBolt可以罩得住的了。）&lt;/p&gt;
+
+&lt;p&gt;storm里面有一类特殊的task称为：acker， 他们负责跟踪spout发出的每一个tuple的tuple树。当acker发现一个tuple树已经处理完成了。它会发送一个消息给产生这个tuple的那个task。你可以通过Config.TOPOLOGY_ACKERS来设置一个topology里面的acker的数量， 默认值是一。 如果你的topology里面的tuple比较多的话， 那么把acker的数量设置多一点，效率会高一点。acker task是非常轻量级的， 所以一个topology里面不需要很多acker。你可以通过Strom UI(id: -1)来跟踪它的性能。 如果它的吞吐量看起来不正常，那么你就需要多加点acker了。&lt;/p&gt;
+
+&lt;p&gt;理解storm的可靠性的最好的方法是来看看tuple和tuple树的生命周期， 当一个tuple被创建， 不管是spout还是bolt创建的， 它会被赋予一个64位的id，而acker就是利用这个id去跟踪所有的tuple的。每个tuple知道它的祖宗的id(从spout发出来的那个tuple的id), 每当你新发射一个tuple， 它的祖宗id都会传给这个新的tuple。所以当一个tuple被ack的时候，它会发一个消息给acker，告诉它这个tuple树发生了怎么样的变化。具体来说就是：它告诉acker： 我呢已经完成了， 我有这些儿子tuple, 你跟踪一下他们吧。storm使用一致性哈希来把一个spout-tuple-id对应到acker， 因为每一个tuple知道它所有的祖宗的tuple-id， 所以它自然可以算出要通知哪个acker来ack。&lt;/p&gt;
+
+&lt;p&gt;当一个spout发射一个新的tuple， 它会简单的发一个消息给一个合适的acker，并且告诉acker它自己的id(taskid)， 这样storm就有了taskid-tupleid的对应关系。 当acker发现一个树完成处理了， 它知道给哪个task发送成功的消息。&lt;/p&gt;
+
+&lt;p&gt;acker task并不显式的跟踪tuple树。对于那些有成千上万个节点的tuple树，把这么多的tuple信息都跟踪起来会耗费太多的内存。相反， acker用了一种不同的方式， 使得对于每个spout tuple所需要的内存量是恒定的（20 bytes) .  这个跟踪算法是storm如何工作的关键，并且也是它的主要突破。一个acker task存储了一个spout-tuple-id到一对值的一个mapping。这个对子的第一个值是创建这个tuple的taskid， 这个是用来在完成处理tuple的时候发送消息用的。 第二个值是一个64位的数字称作：”ack val”, ack val是整个tuple树的状态的一个表示，不管这棵树多大。它只是简单地把这棵树上的所有创建的tupleid/ack的tupleid一起异或(XOR)。当一个acker task 发现一个 ack val变成0了， 它知道这棵树已经处理完成了。 因为tupleid是随机的64位数字， 所以， ack val碰巧变成0(而不是因为所有创建的tuple都完成了)的几率极小。&lt;/p&gt;
+
+&lt;p&gt;所有可能的失败场景:&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;由于对应的task挂掉了，一个tuple没有被ack： storm的超时机制在超时之后会把这个tuple标记为失败，从而可以重新处理。&lt;/li&gt;
+&lt;li&gt;Acker挂掉了：这种情况下由这个acker所跟踪的所有spout tuple都会超时，也就会被重新处理。&lt;/li&gt;
+&lt;li&gt;Spout挂掉了：在这种情况下给spout发送消息的消息源负责重新发送这些消息。比如Kestrel和RabbitMQ在一个客户端断开之后会把所有”处理中“的消息放回队列。&lt;/li&gt;
+&lt;/ul&gt;
+
+
+&lt;p&gt;如果可靠性对你来说不是那么重要 — 你不太在意在一些失败的情况下损失一些数据， 那么你可以通过不跟踪这些tuple树来获取更好的性能。不去跟踪消息的话会使得系统里面的消息数量减少一半， 因为对于每一个tuple都要发送一个ack消息。并且它需要更少的id来保存下游的tuple， 减少带宽占用。&lt;/p&gt;
+
+&lt;p&gt;有三种方法可以去掉可靠性。第一是把Config.TOPOLOGY_ACKERS 设置成 0. 在这种情况下， storm会在spout发射一个tuple之后马上调用spout的ack方法。也就是说这个tuple树不会被跟踪。第二个方法是在tuple层面去掉可靠性。 你可以在发射tuple的时候不指定messageid来达到不跟粽某个特定的spout tuple的目的。最后一个方法是如果你对于一个tuple树里面的某一部分到底成不成功不是很关心，那么可以在发射这些tuple的时候unanchor它们。 这样这些tuple就不在tuple树里面， 也就不会被跟踪了。&lt;/p&gt;
+
+&lt;h2&gt;Acker工作机制&lt;/h2&gt;
+
+&lt;p&gt;storm里的acker用来跟踪所有tuple的完成情况。acker对于tuple的跟踪算法是storm的主要突破之一， 这个算法使得对于任意大的一个tuple树， 它只需要恒定的20字节就可以进行跟踪了。原理很简单：acker对于每个spout-tuple保存一个ack-val的校验值，它的初始值是0， 然后每发射一个tuple/ack一个tuple，那么tuple的id都要跟这个校验值异或一下，并且把得到的值更新为ack-val的新值。那么假设每个发射出去的tuple都被ack了， 那么最后ack-val一定是0(因为一个数字跟自己异或得到的值是0)。&lt;/p&gt;
+
+&lt;p&gt;首先，我们需要注意的是acker实现了IBolt接口，换言之在工作时Acker是作为一个Bolt Task运行的。在提交Topology时，ServiceHandler（org.act.tstream.daemon.nimbus）的submitTopologyWithOpts()中的setupZkTaskInfo会生成TaskInfo，其中创建Task的assignment，首先在创建Topology时同时生成acker（之后分别生成bolt和spout）。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;submitTopologyWithOpts(name, uploadedJarLocation, jsonConf, topology,options);
+——》setupZkTaskInfo(conf, topologyId, stormClusterState);
+——》Map&amp;lt;Integer, String&amp;gt; taskToComponetId = mkTaskComponentAssignments(conf, topologyId);
+——》StormTopology topology = Common.system_topology(stormConf, stopology);
+——》add_acker(ackercount, ret);
+——》IBolt ackerbolt = new Acker();
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;之后为acker创建bolt和spout的输入输出stream。&lt;/p&gt;
+
+&lt;p&gt; &lt;img src=&quot;/images/jstorm/image057.png&quot; alt=&quot;add acker 1&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt; &lt;img src=&quot;/images/jstorm/image058.png&quot; alt=&quot;add acker 2&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;在每个bolt/spout的task建立时，在workerData中也会调用Common。System_topology(stormConf, rawTopology)，其中add_acker。&lt;/p&gt;
+
+&lt;p&gt;在Acker Task创建时，通过BoltExecutors（org.act.tstream.task.execute. BoltExecutors）的构造函数调用bolt.prepare()。默认timeout时间10s。&lt;/p&gt;
+
+&lt;p&gt; &lt;img src=&quot;/images/jstorm/image059.png&quot; alt=&quot;bolt prepare&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;在Spout发送tuple时，会根据是否需要ack采用不同的策略，如果需要ack则创建一个带有anchoring关系的tuple，并加入pending队列，而后发送给acker一个消息，消息的格式为：(spout-tuple-id, tuple-id, task-id)，消息的streamId是__ack_init(ACKER-INIT-STREAM-ID)，这是告诉acker, 一个新的spout-tuple出来了， 你跟踪一下，它是由id为task-id的task创建的(这个task-id在后面会用来通知这个task：你的tuple处理成功了/失败了)。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image060.png&quot; alt=&quot;send spout message 1&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image061.png&quot; alt=&quot;send spout message 2&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;如果不使用ack机制（直接ack成功）。SpoutExecutors有一个pending负责对tuple的ack进行监控，如果超时则调用SpoutTimeoutCallBack进行fail操作（向Spout的接收队列中加入一个fail的message）。&lt;/p&gt;
+
+&lt;p&gt; &lt;img src=&quot;/images/jstorm/image062.png&quot; alt=&quot;expire&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;对于acker，处理完这个消息之后， acker会在它的pending这个map(类型为TimeCacheMap)里面添加这样一条记录: {spout-tuple-id {:spout-task task-id :val ack-val)}，这就是acker对spout-tuple进行跟踪的核心数据结构， 对于每个spout-tuple所产生的tuple树的跟踪都只需要保存上面这条记录。acker后面会检查:val什么时候变成0，变成0， 说明这个spout-tuple产生的tuple都处理完成了。&lt;/p&gt;
+
+&lt;p&gt; &lt;img src=&quot;/images/jstorm/image063.png&quot; alt=&quot;execute&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;对于Bolt来说，处理完一个tuple后，它发送给下一个bolt消息，同时发送给acker ack消息。它调用BoltCollector.boltEmit()时，会检查anchors关系，它会把要ack的tuple的id, 以及这个tuple新创建的所有的tuple的id进行异或运算，然后通过ack把结果发送给acker。在Bolt调用ack时，将pending中异或的结果封装为tuple发送给acker。&lt;/p&gt;
+
+&lt;p&gt; &lt;img src=&quot;/images/jstorm/image064.png&quot; alt=&quot;ack 1&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;每个tuple在被ack的时候，会给acker发送一个消息，消息格式是:&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;(spout-tuple-id, tmp-ack-val)
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;消息的streamId是&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;__ack_ack(ACKER-ACK-STREAM-ID)
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;注意，这里的tmp-ack-val是要ack的tuple的id与由它新创建的所有的tuple的id异或的结果：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;tuple-id ^ (child-tuple-id1 ^ child-tuple-id2 ... )
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;这时，acker接受到这个tuple后，会更新ack-val值。&lt;/p&gt;
+
+&lt;p&gt;Tuple处理失败的时候会给acker发送失败消息，acker会忽略这种消息的消息内容(消息的streamId为ACKER-FAIL-STREAM-ID), 直接将对应的spout-tuple标记为失败。&lt;/p&gt;
+
+&lt;p&gt; &lt;img src=&quot;/images/jstorm/image065.png&quot; alt=&quot;ack 2&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;在acker接受到消息并处理完后，acker会检查ack-val值，如果为0则删掉这个tuple树对应pending项，并向对应spout task发送一个tuple，stream-id为Acker. ACKER_ACK_STREAM_ID，表示tuple被处理完成。否则如果这个spout-tuple被标记失败（被主动fail）则同样删掉pending项，并向spout task发送一个tuple，stream-id为Acker.ACKER_FAIL_STREAM_ID，表示fail。&lt;/p&gt;
+
+&lt;p&gt; &lt;img src=&quot;/images/jstorm/image066.png&quot; alt=&quot;ack 3&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;在Spout收到tuple后会查看stream-id，如果ack则调用ISpout.ack()，如果是fail则调用ISpout.fail()。&lt;/p&gt;
+
+&lt;p&gt;完成一个tuple树的可靠传输。&lt;/p&gt;
+
+&lt;p&gt;注意，重发的过程，用户可以自己放在fail()中进行。&lt;/p&gt;
+</content>
+   </entry>
+   
+   <entry>
+     <title>Jstorm源码分析——Tuple的发送、接收和处理</title>
+     <link href="http://greeensy.github.io/jstorm-tuple"/>
+     <updated>2014-10-15T00:00:00+08:00</updated>
+     <id>http://greeensy.github.io/jstorm-tuple</id>
+     <content type="html">&lt;h2&gt;tuple的处理流程&lt;/h2&gt;
+
+&lt;p&gt;Tuple的处理流程图如图1所示：&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image045.png&quot; alt=&quot;topologySubmit&quot; /&gt;&lt;/p&gt;
+
+&lt;center&gt;图1 Worker中tuple的处理流程&lt;/center&gt;
+
+
+&lt;h2&gt;tuple的发送&lt;/h2&gt;
+
+&lt;p&gt;首先Bolt在发射一个tuple的时候是调用OutputCollector（位置：backtype.storm.task）的emit()或者emitDirect()方法，这个OutputCollector一般定义在Bolt类中用于tuple的发送，OutputCollector.emit()（emitDirect()类似，后面不再赘述）会调用一个IOutputCollector接口的emit()方法，例如BoltCollector等类继承了这个接口。当Topology部署到服务端后，其实就是调用了BoltCollector的emit()方法，它由调用了boltEmit()方法，这里会先处理一些acker相关逻辑，然后调用taskTransfer进行tuple的发送。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image046.png&quot; alt=&quot;bolt emit&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;taskTransfer是一个TaskTransfer对象，这个类是task发送tuple的入口。transfer()中会首先对于目标task进行判断，如果是worker的内部task则将tuple放入innerTaskTransfer中属于这个taskid的发送队列，否则放入serializeQueue队列。这两者都是DisruptorQueue对象，在这个队列中，会定时批量处理其中的对象（consumeBatchWhenAvailable()和consumeBatchToCursor()）。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image047.png&quot; alt=&quot;task transfer&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;innerTaskTransfer是一个workerdata中生成的map结构，建立了taskid和worker内部发送队列的对应关系。它在BaseExecutors类被引用，在BoltExecutors或者SpoutExecutors对象生成时会建立和它的对应关系，在BaseExecutors对象构造时会把本task的接受队列disruptorRecvQueue加入本worker的innerTaskTransfer中。这样worker内部发送tuple时会直接放入目标task的接受队列中而不必调用socket方法。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image048.png&quot; alt=&quot;innerTaskTransfer&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;TaskTransfer类会维护一个serializeQueue队列和一个serializeThread线程。serializeThread会不断地调用serializeQueue的consumeBatchWhenAvailable(this)方法，这会促使其中的tuple被serializeThread.onEvent()处理。在onEvent()中， tuple会被序列化并放入对应workerData的transferQueue中交给worker处理。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image049.png&quot; alt=&quot;comsume batch to cursor&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image050.png&quot; alt=&quot;transfer queue&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image051.png&quot; alt=&quot;onEvent&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;到了worker这里，worker中的workerData里维护一个transferQueue来保存需要发送的tuple，同时worker会执行一个DrainerRunable线程负责发送（调用transferQueue的consumeBatchWhenAvailable()方法来启动自己的DrainerRunable.onEvent()），底层是利用了IConnection进行发送。这里不同的worker之间是在topology启动的时候就已经建立zeroMQ的链接，同时通过RefreshConnections线程（backtype.storm.messaging.IContext）不断地更新和维护。&lt;/p&gt;
+
+&lt;p&gt;总结一些Twitter Storm对于tuple的处理/创建过程：&lt;/p&gt;
+
+&lt;ol&gt;
+&lt;li&gt;Bolt创建一个tuple。&lt;/li&gt;
+&lt;li&gt;Worker把tuple, 以及这个tuple要发送的地址(task-id)组成一个对象(task-id, tuple)放进待发送队列(LinkedBlockingQueue).&lt;/li&gt;
+&lt;li&gt;一个单独的线程(async-loop所创建的线程）会取出发送队列里面的每个tuple来处，Worker创建从当前task到目的task的zeromq连接。序列化这个tuple并且通过这个zeromq的连接来发送这个tuple。&lt;/li&gt;
+&lt;/ol&gt;
+
+
+&lt;h2&gt;tuple的接受和处理&lt;/h2&gt;
+
+&lt;p&gt;每个worker在实例化的时候都会生成对应的task，而后task.mk_executors()会根据类型分别创建新的bolt或者spout（BoltExecutors或SpoutExecutors），Executors是独立的线程在运行。&lt;/p&gt;
+
+&lt;p&gt;以BoltExecutors（com.alibaba.jstorm.task.execute）为例，它的线程函数中有两个工作：监控是否超时并返回acker一个fail信号，激活接受队列（disruptorRecvQueue，DisruptorQueue对象）消耗队列中的项。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image052.png&quot; alt=&quot;BoltExecutors&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;之后disruptorRecvQueue会通过consumeBatchWhenAvailable()和consumeBatchToCursor()来调用BoltExecutors的onEvent()对接受到的tuple进行处理。&lt;/p&gt;
+
+&lt;p&gt;在onEvent()中会调用bolt.execute(tuple)进行tuple的处理，即用户应用程序中bolt定义的处理内容。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image053.png&quot; alt=&quot;onEvent&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;Spout同理，见SpoutExecutors.java。&lt;/p&gt;
+
+&lt;p&gt;对于disruptorRecvQueue队列，它定义在了BaseExecutors（BoltExecutors和SpoutExecutors继承自这个类）中，通过RecvRunnable执行在一个独立线程中，这个线程需要维护这个接受队列，同时接受tuple并放入队列。RecvRunnabel线程中会循环调用recv()方法，当有tuple被收到后放入队列中。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image054.png&quot; alt=&quot;recv Runnable&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;在recv()中，通过ser_msg = puller.recv(0)得到接受内容，如果为空则返回，如果长度为1则是状态改变的消息，如果长度大于1则为tuple，序列化后返回由RecvRunnable放入队列。puller是一个IConnection接口，IConnection由zeroMQ、Netty等实现，即通过ZeroMQ或Netty等消息框架的recv()来获取tuple结果。&lt;/p&gt;
+
+&lt;p&gt; &lt;img src=&quot;/images/jstorm/image055.png&quot; alt=&quot;recv&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;其实zeroMq的底层是利用了socket的方式实现。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image056.png&quot; alt=&quot;zeroMq&quot; /&gt;&lt;/p&gt;
+</content>
+   </entry>
+   
+   <entry>
+     <title>Jstorm源码分析——Topology的提交和实例化过程</title>
+     <link href="http://greeensy.github.io/jstorm-topology-submit"/>
+     <updated>2014-08-26T00:00:00+08:00</updated>
+     <id>http://greeensy.github.io/jstorm-topology-submit</id>
+     <content type="html">&lt;h2&gt;Topology提交过程流程&lt;/h2&gt;
+
+&lt;p&gt;Topology的上传过程是将完成的Jstorm程序打包成jar再上传到Jstorm中，通过” jstorm jar xxxxxx.jar com.alibaba.xxxx.xx parameter”命令启动JStorm的上传时会通过这个python脚本中main函数调用对应的函数启动相应jar中的功能模块。而后这个java程序会被编译执行并从命令中的，其中的submitTopology()会触发Topology的提交过程。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image021.png&quot; alt=&quot;topologySubmit&quot; /&gt;&lt;/p&gt;
+
+&lt;center&gt;图1 Topology提交过程流程图&lt;/center&gt;
+
+
+&lt;h2&gt;Nimbus-接受提交的Topology&lt;/h2&gt;
+
+&lt;p&gt;在Jstorm-client-Backtype-storm下的StormSubmitter.java中定义了提交jar的方法：submitJar()（submitTopology()调用这个方法将topologies提交给cluster）。&lt;/p&gt;
+
+&lt;p&gt;Use this class to submit topologies to run on the Storm cluster. You should run your program with the &quot;storm jar&quot; command from the command-line, and then use this class to submit your topologies.&lt;/p&gt;
+
+&lt;p&gt;它首先调用nimbus$iface接口的beginFileUpload()，uploadChunk()，和finishFileUpload()，然后它们会利用sendBase向服务端传送消息调用服务端的对应函数。服务端的对应方法（Jstorm-server-Daemon-Nimbus-ServiceHandler.java）来把jar包上传到nimbus服务器上的/inbox目录。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image022.png&quot; alt=&quot;submit Topology client&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;beginFileUpload：&lt;/p&gt;
+
+&lt;p&gt;客户端&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image023.png&quot; alt=&quot;beginFileUpload client&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;服务端：&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image024.png&quot; alt=&quot;beginFileUpload server&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;uploadChunk：&lt;/p&gt;
+
+&lt;p&gt;客户端：&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image025.png&quot; alt=&quot;uploadChunk client&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;服务端：&lt;/p&gt;
+
+&lt;p&gt; &lt;img src=&quot;/images/jstorm/image026.png&quot; alt=&quot;uploadChunk server&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;finishFileUpload：&lt;/p&gt;
+
+&lt;p&gt;客户端：&lt;/p&gt;
+
+&lt;p&gt; &lt;img src=&quot;/images/jstorm/image027.png&quot; alt=&quot;finishFileUpload client&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;服务端：&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image028.png&quot; alt=&quot;finishFileUpload server&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;然后进行运行topology之前的一些校验。topology的代码上传之后服务端的submitTopology(submitTopologyWithOpts)方法会负责对这个topology进行处理， 它首先要对storm本身，以及topology进行一些校验:&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;它要检查storm的状态是否是active的（服务端）&lt;/li&gt;
+&lt;li&gt;它要检查是否已经有同名的topology已经在storm里面运行了（客户端）&lt;/li&gt;
+&lt;li&gt;因为我们会在代码里面给spout, bolt指定id, storm会检查是否有两个spout和bolt使用了相同的id。&lt;/li&gt;
+&lt;li&gt;任何一个id都不能以”__”开头， 这种命名方式是系统保留的。&lt;/li&gt;
+&lt;/ul&gt;
+
+
+&lt;p&gt;这一部分没有找到。&lt;/p&gt;
+
+&lt;p&gt;如果以上检查都通过了，那么就进入下一步了。建立topology的本地目录：&lt;/p&gt;
+
+&lt;p&gt; &lt;img src=&quot;/images/jstorm/image029.png&quot; alt=&quot;build dir&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;共建立了三方面目录：&lt;/p&gt;
+
+&lt;ol&gt;
+&lt;li&gt;为这个topology建立它的本地目录。&lt;/li&gt;
+&lt;li&gt;建立topology在zookeeper上的心跳目录。&lt;/li&gt;
+&lt;li&gt;zookeeper上的/task目录。&lt;/li&gt;
+&lt;/ol&gt;
+
+
+&lt;h2&gt;Nimbus-分配任务给supervisor&lt;/h2&gt;
+
+&lt;p&gt;nimbus对每个topology都会做出详细的预算：需要多少工作量(多少个task)。它是根据topology定义中给的parallelism hint参数， 来给spout/bolt来设定task数目了，并且分配对应的task-id。并且把分配好task的信息写入zookeeper上的/task目录下: 打比方说我们的topology里面一共有一个spout, 一个bolt。 其中spout的parallelism是2, bolt的parallelism是4, 那么我们可以把这个topology的总工作量看成是6， 那么一共有6个task，那么/tasks/{topology-id}下面一共会有6个以task-id命名的文件，其中两个文件的内容是spout的id, 其它四个文件的内容是bolt的id。&lt;/p&gt;
+
+&lt;p&gt; &lt;img src=&quot;/images/jstorm/image030.png&quot; alt=&quot;setup zookeeper task info&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt; &lt;img src=&quot;/images/jstorm/image031.png&quot; alt=&quot;make task component assignments&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;把计算好的工作分配给supervisor去做。&lt;/p&gt;
+
+&lt;p&gt;然后nimbus就要给supervisor分配工作了。工作分配的单位是task(上面已经计算好了的，并且已经给每个task编号了), 那么分配工作意思就是把上面定义好的一堆task分配给supervisor来做， 在nimbus里面，Assignment表示一个topology的任务分配信息：&lt;/p&gt;
+
+&lt;p&gt;任务分配单独一个线程TopologyAssign（com.alibaba.jstorm.daemon.nimbus）进行操作。调用关系是Run() -&gt; doTopologyAssignment()-&gt; mkAssignment()。&lt;/p&gt;
+
+&lt;p&gt;mkAssignment中进行端口分配等工作。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image032.png&quot; alt=&quot;make assignments for a topology&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;其中核心数据就是task-&gt;node+port, 它其实就是从task-id到supervisor-id+port的映射， 也就是把这个task分配给某台机器的某个端口来做。工作分配信息会被写入zookeeper的如下目录:&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;/-{storm-zk-root}           -- storm在zookeeper上的根目录
+  |
+  |-/assignments            -- topology的任务分配信息
+      |
+      |-/{topology-id}  -- 这个下面保存的是每个topology的assignments
+                信息包括： 对应的nimbus上的代码目录,所有
+                task的启动时间,每个task与机器、端口的映射
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;mkAssignment ()中的set_assignment会保存分配情况到zk目录。&lt;/p&gt;
+
+&lt;h2&gt;Nimbus-激活Topology&lt;/h2&gt;
+
+&lt;p&gt;到现在为止，任务都分配好了，那么我们可以正式启动这个topology了，在源代码里面，启动topology其实就是将Topology的状态设置为active，与此同时向zookeeper上面该topology所对应的目录写入这个topology（即zk中的topology目录下）的信息（stormClusterState.activate_storm (topologyId, stormBase)进行这个工作）。StormBase即zk中存储的Topology的内容。&lt;/p&gt;
+
+&lt;p&gt;注意，在任务分配中（doTopologyAssignment()）进行了topology的启动工作，将其状态activate并写入zk。&lt;/p&gt;
+
+&lt;p&gt; &lt;img src=&quot;/images/jstorm/image033.png&quot; alt=&quot;doTopologyAssignment&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;到这里为止nimbus的工作算是差不多完成了，下面就看supervisor的了。&lt;/p&gt;
+
+&lt;h2&gt;Supervisor 接受和处理Nimbus的指派&lt;/h2&gt;
+
+&lt;p&gt;SyncSupervisorEvent每supervisor.monitor.frequency.secs s就运行一次（EventManager每隔一段时间加入一个event到队列中，同时其不断从队列里取出event进行run）。&lt;/p&gt;
+
+&lt;p&gt; &lt;img src=&quot;/images/jstorm/image034.png&quot; alt=&quot;supervisor thread&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;SyncSupervisorEvent获取zk上所有的Assignment，再读取本地topology，获取zk上的对应本Supervisor的Assignment（不同于storm），并将其写入localstate，然后下载本地没有下载过的Assignment，之后移除无用的topology，最后启动syncProcessEvent。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image035.png&quot; alt=&quot;SyncSupervisorEvent&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;SyncProcessEvent执行两个工作：&lt;/p&gt;
+
+&lt;ol&gt;
+&lt;li&gt;kill bad worker;&lt;/li&gt;
+&lt;li&gt;start new worker。第一步从localstate获取assigned tasks，第二步获取本地的worker状态（心跳），第三步移除无效或者killed的worker同时将有效的worker放入keepPorts，最后开始新的workers，这里它会找到assignedTask但是不在keeperports中的tasks，通过launchWorker产生新的worker承担这个assignment。&lt;/li&gt;
+&lt;/ol&gt;
+
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image036.png&quot; alt=&quot;SyncProcessEvent&quot; /&gt;&lt;/p&gt;
+
+&lt;h2&gt;Worker的创建和初始化&lt;/h2&gt;
+
+&lt;p&gt;每个Worker只针对一个Topology，负责该Topology中某些并行化Task在该机器上的执行。worker的主要任务有:&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;管理Task实例，Task对象管理着RunnableCallBack，用于处理Tuple。&lt;/li&gt;
+&lt;li&gt;接收外部tuple的消息，转发给Task；&lt;/li&gt;
+&lt;li&gt;向外发送tuple消息，发送给下游Task。&lt;/li&gt;
+&lt;li&gt;发送心跳消息&lt;/li&gt;
+&lt;li&gt;……&lt;/li&gt;
+&lt;/ul&gt;
+
+
+&lt;p&gt;com.alibaba.jstorm.daemon.worker中从main进入，首先调用mk_worker()，建立一个新的worker，其中实例化一个worker对象（其中实例化一个workerData对象）在workerData中会初始化一些参数，包括当前worker的task list。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image037.png&quot; alt=&quot;workerData&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;然后执行worker.execute()，对Worker进行初始化。在worker.execut()中，&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;实例化所对应的task（调用createTasks(),Task.mk_task(worerData,tasked)）&lt;/li&gt;
+&lt;li&gt;创建虚拟端口对象（WorkerVirtualPort）来绑定连接端口。WorkerVirtualPort用于接收Tuple，并通过zeroMQ将Tuple转发给Task对象.&lt;/li&gt;
+&lt;li&gt;建立task对应输出流的连接（makeRefreshConnections()）&lt;/li&gt;
+&lt;li&gt;激活zk中的activate状态&lt;/li&gt;
+&lt;li&gt;&lt;p&gt;建立heartbeat等。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image038.png&quot; alt=&quot;worker execute&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image039.png&quot; alt=&quot;create tasks&quot; /&gt;&lt;/p&gt;&lt;/li&gt;
+&lt;/ul&gt;
+
+
+&lt;p&gt;其中，在第1步创建task时，com.alibaba.jstorm.task的mk_task()函数实例化一个Task对象。&lt;/p&gt;
+
+&lt;h2&gt;Task的创建和初始化&lt;/h2&gt;
+
+&lt;p&gt;Task在其构造函数中会获取对应的spout/bolt对象。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image040.png&quot; alt=&quot;task&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;在Worker创建Task时，mk_task()函数创建task对象之后将执行其execute()函数。Task.execute()中：&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;创建heartbeat&lt;/li&gt;
+&lt;li&gt;创建线程来接受zeroMQ中的tuple并将tuple转交给bolt/spout处理。调用关系是：execute() -&gt; mkExecutor () -&gt; mk_executors ()，mk_executors()会根据类型创建新的bolt或者spout（BoltExecutors或SpoutExecutors）。&lt;/li&gt;
+&lt;/ul&gt;
+
+
+&lt;p&gt; &lt;img src=&quot;/images/jstorm/image041.png&quot; alt=&quot;make executors&quot; /&gt;&lt;/p&gt;
+
+&lt;h2&gt;Topology终止&lt;/h2&gt;
+
+&lt;p&gt;除非你显式地终止一个topology, 否则它会一直运行的，可以用下面的命令去终止一个topology：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;storm kill {stormname}
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;在Jstorm-client中，backtype.storm.command定义了Kill_topology命令的工作：它根据参数调用killTopology(topologyName)或killTopologyWithOpts(topologyName, options)，而后客户端将参数传入服务端调用相应方法（com.alibaba.jstorm.daemon.nimbus中的ServiceHandler.java中的killTopologyWithOpts()）。它会首先检查topology状态，然后把状态转换为killed，通过回调函数KillTransitionCallback()（com.alibaba.jstorm.callback.impl）在2 * Timeout seconds后将状态转换为remove，再调用RemoveTransitionCallback删除zk中topology的相关信息。（这里注意状态转换对应回调函数需要查看stateTransitions的map关系）&lt;/p&gt;
+
+&lt;p&gt; &lt;img src=&quot;/images/jstorm/image042.png&quot; alt=&quot;kill transition callback&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt; &lt;img src=&quot;/images/jstorm/image043.png&quot; alt=&quot;remove transition callback&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt; &lt;img src=&quot;/images/jstorm/image044.png&quot; alt=&quot;remove storm&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;上面的代码会把zookeeper上面/tasks, /assignments, /storms下面有关这个topology的数据都删除了。这些数据(或者目录）之前都是nimbus创建的。还剩下/taskbeats以及/taskerrors下的数据没有清除， 这块数据会在supervisor下次从zookeeper上同步数据的时候删除的（supervisor会删除那些已经不存在的topology相关的数据)。这样这个topology的数据就从storm集群上彻底删除了。&lt;/p&gt;
+</content>
+   </entry>
+   
+   <entry>
+     <title>Jstorm源码分析——Jstorm的启动过程</title>
+     <link href="http://greeensy.github.io/jstorm-startup"/>
+     <updated>2014-08-06T00:00:00+08:00</updated>
+     <id>http://greeensy.github.io/jstorm-startup</id>
+     <content type="html">&lt;h2&gt;Jstorm的启动命令&lt;/h2&gt;
+
+&lt;p&gt;与Storm类似，Jstorm的启动过程需要两个部分：&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;在nimbus 节点上执行 “nohup jstorm nimbus &amp;amp;”&lt;/li&gt;
+&lt;li&gt;在supervisor节点上执行 “nohup jstorm supervisor &amp;amp;”&lt;/li&gt;
+&lt;/ul&gt;
+
+
+&lt;p&gt;bin/Jstorm是一个python写的脚本，是Jstorm的程序入口，Jstorm的启动以及Topology的提交等过程都需要用到这个脚本。&lt;/p&gt;
+
+&lt;h2&gt;Nimbus&lt;/h2&gt;
+
+&lt;p&gt;首先我们先看nimbus的启动。在bin/Jstorm脚本中，通过jstorm nimbus调用将触发脚本中的nimbus()方法，其中调用的是&quot;com.alibaba.jstorm.daemon.nimbus.NimbusServer&quot;。&lt;/p&gt;
+
+&lt;p&gt;NimbusServer的工作包括：&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;清除中断的Topology（删除本地目录/storm-local-dir/nimbus/topologyid/stormdis和zk上的/storm-zk-root/storms/topologyid）&lt;/li&gt;
+&lt;li&gt;设置/storm-zk-root/storms/topology中的Topology状态为active&lt;/li&gt;
+&lt;li&gt;启动一个monitor线程，每nimbus.monitor.reeq.secs检查/storm-zk-root/storms中所有Topology状态，如果Topology中有task是不活动的则讲Topology状态转换为monitor（这个状态下nimbus会重新分配workers）&lt;/li&gt;
+&lt;li&gt;启动一个cleaner线程，每nimubs.cleanup.inbox.freq.secs清除无用的jar&lt;/li&gt;
+&lt;/ul&gt;
+
+
+&lt;p&gt;NimbusServer启动的时候，它首先创建一个nimbusServer的对象，并调用其launchServer(config,iNimbus)启动NimbusServer。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image017.png&quot; alt=&quot;NimbusServer&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;在launchServer中，它需要创建本地pids目录（createPid(conf)），初始化关闭nimbus的hook（initShutdownHook()，其实是启动线程调用cleanup()），准备nimbus工作槽（inimbus.prepare(conf, StormConfig.masterInimbus(conf))），创建NimbusData（com.alibaba.jstorm.daemon.nimbus.NimbusData，所有nimbus的数据），初始化followerTread（FollowerTread线程是com.alibaba.jstorm.schedule.FollowerRunnable，作用是定时去检查更新nimbus的工作情况，并且必要时替换新的nimbus），启动Httpserver，初始化initContainerHBThread（心跳HeartBeat相关），然后等待自己成为leader（在NimbusData中的tryTobeLeader()方法中会改变Leader的情况），如果是则载入配置（init(conf)），否则持续等待。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image018.png&quot; alt=&quot;LaunchServer&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;在init(Map conf)中，会初始化initTopologyAssign()、initTopologyStatus()（前者分配Topology并设置状态为active，后者将active转换为startup但是什么都不做），同时初始化Monitor线程（initMonitor(conf)）、Cleaner线程（initCleaner(conf)）分别承担Monitor和clean的工作，初始化一个serviceHandler对象，它会接受客户端传递过来的消息并调用相关方法进行Topology的提交等工作（见5.1），最后如果不是本地模式则还需要初始化分组（initGroup(conf)）和Thrift（initThrift(conf)）。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image019.png&quot; alt=&quot;init&quot; /&gt;&lt;/p&gt;
+
+&lt;h2&gt;Supervisor&lt;/h2&gt;
+
+&lt;p&gt;在bin/Jstorm脚本中，通过jstorm nimbus调用将触发脚本中的Supervisor()方法，其中调用的是&quot; com.alibaba.jstorm.daemon.supervisor.Supervisor&quot;。&lt;/p&gt;
+
+&lt;p&gt;Supervisor是一个持续运行的主控线程（见com.alibaba.jstorm.daemon.supervisor下Supervisor.java），Supervisor的工作有：&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;向zookeeper中写入Supervisor信息&lt;/li&gt;
+&lt;li&gt;每supervisor.monitor.frequency.secs运行一次SynchronizeSupervisor，其中这个线程先下载新的Topology，而后释放没有用的worker，然后分配新的task到localstate，最后添加一个syncProcesses到队列中&lt;/li&gt;
+&lt;li&gt;syncProcesses是具体的执行动作，它杀掉无用的worker，开始新的worker&lt;/li&gt;
+&lt;li&gt;创建心跳线程，每supervisor.heartbeat.frequency.secs向zookeeper中写入一次信息。&lt;/li&gt;
+&lt;/ul&gt;
+
+
+&lt;p&gt;该线程启动的时候：&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;调用mkSupervisor，启动一个supervisorManager。其中，首先清空本地/storm-local-dir/supervisor/tmp的文件，建立zk集群状态、localStat，获取Supervisor id，创建线程队列，创建心跳线程HeartBeat，创建SyncSupervisorEvent线程（用于从Zookeeper获取Event，详见“第6章Topology的提交与实例化过程”），创建和开始httpserver线程，最后返回一个SupervisorManager对象。这里注意，用到一个AsyncLoopThread（和AsyncLoopRunnable），这是一个特殊的一个线程，根据回调函数的返回值决定线程休眠时间，或者根据异常结束线程。&lt;/li&gt;
+&lt;li&gt;Supervisor线程每1s查看一次SupervisorManager状态是否已经结束。Supervisor线程是一个主控线程，主要查看SupervisorManager状态的状态。具体的处理功能都由它所创建的其他线程完成。比如SyncSupervisorEvent线程每supervisor.monitor.frequency.secs s就运行一次（EventManager每隔一段时间加入一个event到队列中，同时其不断从队列里取出event进行处理）。&lt;/li&gt;
+&lt;/ul&gt;
+
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image020.png&quot; alt=&quot;Supervisor&quot; /&gt;&lt;/p&gt;
+</content>
+   </entry>
+   
+   <entry>
+     <title>Jstorm源码分析——JStorm的系统状态</title>
+     <link href="http://greeensy.github.io/jstorm-status"/>
+     <updated>2014-08-01T00:00:00+08:00</updated>
+     <id>http://greeensy.github.io/jstorm-status</id>
+     <content type="html">&lt;h2&gt;JStorm的系统状态&lt;/h2&gt;
+
+&lt;p&gt;storm集群里面工作机器分为两种一种是nimbus, 一种是supervisor, 他们通过zookeeper来进行交互，nimbus通过zookeeper来发布一些指令，supervisor去读zookeeper来执行这些指令。&lt;/p&gt;
+
+&lt;p&gt;这篇文章主要介绍JStorm的本地目录，zookeeper的本地目录，以及他们之间如何协调工作。&lt;/p&gt;
+
+&lt;h2&gt;ZooKeeper中保存的数据目录结构&lt;/h2&gt;
+
+&lt;p&gt;Zookeeper在storm中的作用主要有两个方面：&lt;/p&gt;
+
+&lt;ol&gt;
+&lt;li&gt;Twitter Storm的所有的状态信息都是保存在Zookeeper里面，nimbus通过在zookeeper上面写状态信息来分配任务，supervisor，task通过从zookeeper中读状态来领取任务&lt;/li&gt;
+&lt;li&gt;supervisor, task也会定义发送心跳信息到zookeeper， 使得nimbus可以监控整个storm集群的状态， 从而可以重启一些挂掉的task&lt;/li&gt;
+&lt;/ol&gt;
+
+
+&lt;p&gt;Storm在Zookeeper中保存的数据目录结构：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;/-{storm-zk-root}           -- storm在zookeeper上的根目录
+  |
+  |-/assignments          -- topology的任务分配信息
+  |   |-/{topology-id}       -- 这个下面保存的是每个topology的assignments
+  |                  信息包括： 对应的nimbus上的代码目录,所有
+  |                  的启动时间, 每个task与机器、端口的映射
+  |-/tasks             -- 所有的task
+  |   |-/{topology-id}       -- 这个目录下面id为{topology-id}的topology 
+  |       |            所对应的所有的task-id
+  |       |-/{task-id}     -- 这个文件里面保存的是这个task对应的
+  |                  component-id：可能是spout-id或者bolt-id
+  |-/topology             -- 这个目录保存所有正在运行的topology的id
+    |                  (这里好像是topology不是storms)
+  |   |-/{topology-id}       -- 这个文件保存这个topology的一些信息，包括
+  |                  topology的名字，topology开始运行时间以及
+  |                  这个topology的状态 (具体看StormBase类)
+  |-/supervisors          -- 这个目录保存所有的supervisor的心跳信息
+  |   |-/{supervisor-id}        -- 这个文件保存的是supervisor的心跳信息包括: 
+  |                  心跳时间，主机名，这个supervisor上worker
+  |                  的端口号运行时间 (具体看SupervisorInfo类)
+  |-/taskbeats           -- 所有task的心跳
+  |   |-/{topology-id}       -- 这个目录保存这个topology的所有的task的心
+  |       |                     跳信息
+  |       |-/{task-id}     -- task的心跳信息，包括心跳的时间，task运行时
+  |                   间以及一些统计信息
+  |-/taskerrors           -- 所有task所产生的error信息
+      |
+      |-/{topology-id}      -- 这个目录保存这个topology下面每个task的出
+          |                 错信息
+          |-/{task-id}    -- 这个task的出错信息
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;源代码主要是: com.alibaba.jstorm.cluster，Jstorm-server中的cluster下的Cluster.java。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image009.png&quot; alt=&quot;Cluster1&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image010.png&quot; alt=&quot;Cluster2&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;状态查询是Cluster.mk_storm_cluster_state()方法定义的，返回类型是StormZkClusterState对象：&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;StormClusterState.java中定义了集群状态查询的接口&lt;/li&gt;
+&lt;li&gt;StormZkClusterState.java对其进行了实现，其构造函数中，会初始化一些参数，例如将状态ID（state_id）和回调函数关联起来，但是注册的方法定义在Jstorm-client-extension中的Cluster中的ClusterState.java（com.alibaba.jstorm.cluster），它的实现同样在这个目录下的DistributedCluster.java中。此类中还定义了get_data(),get_children等方法，大部分关联在一个zkobj(Zookeeper)的变量上，用到的都是zookeeper的相关方法。这部分内容在Jstorm-client-extension中的Zk中的Zookeeper.java中。&lt;/li&gt;
+&lt;/ul&gt;
+
+
+&lt;p&gt;其他查询接口例如：assignment_info()查询分配信息（其中用到Assignment类型数据，定义在Jstorm-server中的Task的Assignment.java），heartbeat_tasks()查看对应目录下存储的心跳，leader_existed()查询leader是否存在等。&lt;/p&gt;
+
+&lt;p&gt;Cluster.java中还有一些如topology_task_info()，get_topology_id()等方法也是需要用到StormClusterState对象的对应方法。&lt;/p&gt;
+
+&lt;h2&gt;nimbus和supervisor在自己本机存储信息&lt;/h2&gt;
+
+&lt;p&gt;nimbus机器上面只有/nimbus目录；supervisor机器上面有/supervisor和/workers两个目录。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;/{storm-local-dir}
+  |
+  |-/nimbus
+  |   |-/inbox                  -- 从nimbus客户端上传的jar包会在这个目录里
+  |   |  |                         面
+  |   |  |-/stormjar-{uuid}.jar     -- 上传的jar包其中{uuid}表示生成的一个uuid
+  |   |                            
+  |   |-/stormdist
+  |      |
+  |      |-/{topology-id}
+  |         |-/stormjar.jar         -- 包含这个topology所有代码的jar包(从
+  |         |                     nimbus/inbox里面挪过来的)
+  |         |-/stormcode.ser        -- 这个topology对象的序列化
+  |         |-/stormconf.ser        -- 运行这个topology的配置
+  |-/supervisor
+  |   |-/stormdist
+  |   |   |-/{topology-id}
+  |   |      |-/resources           -- 这里保存的是topology的jar包里面的resources
+  |   |      |                     目录下面的所有文件
+  |   |      |-/stormjar.jar            -- 从nimbus机器上下载来的topology的jar包
+  |   |      |-/stormcode.ser       -- 从nimbus机器上下载来的这个topology对象的
+  |   |      |                     序列化形式
+  |   |      |-/stormconf.ser      -- 从nimbus机器上下载来的运行这个topology的
+  |   |                            配置
+  |   |-/localstate                 -- supervisor的localstate
+  |   |-/tmp                        -- 临时目录，从Nimbus上下载的文件会先存在这
+  |      |                         个目录里面，然后做一些简单处理再copy到
+  |      |                         stormdist/{topology-id}里面去
+  |      |-/{uuid}
+  |         |-/stormjar.jar         -- 从Nimbus上面download下来的工作jar包
+  |-/workers
+      |-/{worker-id}
+          |-/pids                   -- 一个worker可能会起多个子进程所以可能会
+          |   |                    有多个pid
+          |   |-/{pid}              -- 运行这个worker的JVM的pid
+          |-/heartbeats         -- 这个supervisor机器上的worker的心跳信息
+             |-/{worker-id}        -- 这里面存的是一个worker的心跳：主要包括
+                                   心跳时间和worker的id
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;代码主要包括config.java（Jstorm-client下backtype下storm目录）, StormConfig.java（Jstorm-server中的cluster下的StormConfig.java）。&lt;/p&gt;
+
+&lt;p&gt;Config.java中定义了很多字符串变量，定义了配置参数的位置。&lt;/p&gt;
+
+&lt;p&gt;StormConfig.java中说明了storm本体目录下nimbus、supervisor、worker的存储内容：&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image011.png&quot; alt=&quot;Nimbus1&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image012.png&quot; alt=&quot;supervisor1&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image013.png&quot; alt=&quot;stormJar&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image014.png&quot; alt=&quot;supervisor2&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image015.png&quot; alt=&quot;Worker&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;有一个问题：
+Nimbus中的inimbus，作用？
+nimbus中还有pids，作用是？
+nimbus中还有心跳，作用是？&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image016.png&quot; alt=&quot;Nimbus2&quot; /&gt;&lt;/p&gt;
+</content>
+   </entry>
+   
+   <entry>
+     <title>Jstorm源码分析——Topology</title>
+     <link href="http://greeensy.github.io/jstorm-programing"/>
+     <updated>2014-07-11T00:00:00+08:00</updated>
+     <id>http://greeensy.github.io/jstorm-programing</id>
+     <content type="html">&lt;p&gt;JStorm 是一个分布式实时计算引擎。JStorm 是一个类似Hadoop MapReduce的系统， 用户按照指定的接口实现一个任务，然后将这个任务递交给JStorm系统，Jstorm将这个任务跑起来，并且按7 * 24小时运行起来，一旦中间一个worker 发生意外故障， 调度器立即分配一个新的worker替换这个失效的worker。因此，从应用的角度，JStorm 应用是一种遵守某种编程规范的分布式应用。从系统角度， JStorm一套类似MapReduce的调度系统。 从数据的角度， 是一套基于流水线的消息处理机制。实时计算现在是大数据领域中最火爆的一个方向，人们对数据的要求越来越高，实时性要求也越来越快，传统的Hadoop Map Reduce，逐渐满足不了需求，因此在这个领域Storm 和JStorm 展露头角。JStorm 是用java 完全重写Storm内核， 并重新设计了调度、采样、监控、HA，并对Zookeeper和RPC 进行大幅改良，让性能有30%的提升， 从而JStorm比storm更稳定， 更快，功能更强。&lt;/p&gt;
+
+&lt;p&gt;这篇文章主要介绍JStorm的Topology和基本编程结构，编程结构基本类似于Storm，结合源码简单说一下，也做一个备份。&lt;/p&gt;
+
+&lt;p&gt;之后还会有几篇文章来分析JStorm的源码。&lt;/p&gt;
+
+&lt;h2&gt;Topology示例&lt;/h2&gt;
+
+&lt;p&gt;我们从一个例子来说明Jstorm中如何定义一个Topology，然后再深入说明其中的调用关系：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;//Step 1. Create topology object
+//创建topology的生成器
+TopologyBuilder builder = new TopologyBuilder();
+
+//创建Spout， 其中
+// - new SequenceSpout() 为真正spout对象，
+// - SequenceTopologyDef.SEQUENCE_SPOUT_NAME 为spout的名字，注意名字中不要含有空格
+int spoutParal = get(&quot;spout.parallel&quot;, 1); //获取spout的并发设置
+SpoutDeclarer spout = builder.setSpout(SequenceTopologyDef.SEQUENCE_SPOUT_NAME,
+                new SequenceSpout(), spoutParal);
+
+//创建bolt， 
+// - SequenceTopologyDef.TOTAL_BOLT_NAME 为bolt名字，
+// - TotalCount 为bolt对象，
+// - boltParal为bolt并发数，
+//shuffleGrouping（SequenceTopologyDef.SEQUENCE_SPOUT_NAME），表示接收
+//SequenceTopologyDef.SEQUENCE_SPOUT_NAME的数据，并且以shuffle方式，
+//即每个spout随机轮询发送tuple到下一级bolt中
+int boltParal = get(&quot;bolt.parallel&quot;, 1); //获取bolt的并发设置
+BoltDeclarer totalBolt = builder.setBolt(SequenceTopologyDef.TOTAL_BOLT_NAME, new TotalCount(),boltParal).shuffleGrouping(SequenceTopologyDef.SEQUENCE_SPOUT_NAME);
+
+//Step 2. Create Config object
+//topology所有自定义的配置均放入这个Map
+Map conf = new HashMp();
+
+//设置表示acker的并发数
+int ackerParal = get(&quot;acker.parallel&quot;, 1);
+Config.setNumAckers(conf, ackerParal);
+
+//表示整个topology将使用几个worker
+int workerNum = get(&quot;worker.num&quot;, 10);
+conf.put(Config.TOPOLOGY_WORKERS, workerNum);
+
+//设置topolog模式为分布式，这样topology就可以放到JStorm集群上运行
+conf.put(Config.STORM_CLUSTER_MODE, &quot;distributed&quot;);
+
+//Step 3. Submit Topology
+//提交topology
+StormSubmitter.submitTopology(streamName, conf, builder.createTopology());
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;其中，TopologyBuilder（backtype.storm.topology.TopologyBuilder）是Topology的生成器，一个Topology的创建工作必须由它来控制。其中关键的方法有： createTopology()，setBolt()，setSpout()，BoltGetter.grouping()。&lt;/p&gt;
+
+&lt;p&gt;createTopology()中会获取在应用代码中已经定义好的bolt、spout和对于的连接关系，分别放入boltSpecs、spoutSpecs中，然后由此建立一个StormTopology对象并返回。StormTopology就是一个Topology对象，包括bolt和spout等信息，通过submitTopology()方法直接上传。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image001.png&quot; alt=&quot;createTopology&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;setBolt()是添加一个Bolt到Topology中的过程，有四种重载的形式：&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;public BoltDeclarer setBolt(String id, IRichBolt bolt)&lt;/li&gt;
+&lt;li&gt;public BoltDeclarer setBolt(String id, IRichBolt bolt,Number parallelism_hint)&lt;/li&gt;
+&lt;li&gt;public BoltDeclarer setBolt(String id, IBasicBolt bolt)&lt;/li&gt;
+&lt;li&gt;public BoltDeclarer setBolt(String id, IBasicBolt bolt,Number parallelism_hint)&lt;/li&gt;
+&lt;/ul&gt;
+
+
+&lt;p&gt;其最终都是利用其中第二个方法进行实现，其中包括的工作有：验证id是否可用，初始化构成（initCommon()，连接关系的结构和并行度等），放入bolt队列。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image002.png&quot; alt=&quot;setBolt&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image003.png&quot; alt=&quot;initCommon&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;setSpout()与setBolt()类似，不再赘述。&lt;/p&gt;
+
+&lt;p&gt;grouping()定义在BoltGetter中，它是TopologyBuilder的一个嵌套类，也是setBolt()的返回类型，grouping()中定义了bolt、spout的连接关系和分组方式，其中分组方式有：fields，shuffle，all，none，direct，custom_object，custom_serialized，local_or_shuffle这八种，分别对应fieldsGrouping()、shuffleGrouping()等方法来连接两个component（bolt/spout），而它们也是调用了grouping()方法来实现。grouping(String componentId, String streamId, Grouping grouping)会把传入的component（bolt/spout）放入当前的component（bolt）的input队列中表示前者输出的tuple会送入后者，同时会带有一个grouping的参数表示分组方式。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image004.png&quot; alt=&quot;grouping&quot; /&gt;&lt;/p&gt;
+
+&lt;h2&gt;Bolt&lt;/h2&gt;
+
+&lt;h3&gt;IRichBolt&lt;/h3&gt;
+
+&lt;p&gt;在setBolt()中我们需要传入一个Bolt，比如例子中的TotalCount()，它继承了IRichBolt接口。&lt;/p&gt;
+
+&lt;p&gt;IRichBolt接口是最为简单的Bolt接口，它实现了IBolt和IComponent两个接口，前者定义了void prepare(Map stormConf, TopologyContext context, OutputCollector collector)，void execute(Tuple input)，void cleanup()三个函数，后者定义了void declareOutputFields(OutputFieldsDeclarer declarer)和Map&amp;lt;String, Object&gt; getComponentConfiguration()两个函数。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image005.png&quot; alt=&quot;TotalCount&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;注意：&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;bolt对象必须是继承Serializable， 因此要求bolt内所有数据结构必须是可序列化的；&lt;/li&gt;
+&lt;li&gt;bolt可以有构造函数，但构造函数只执行一次，是在提交任务时，创建bolt对象，因此在task分配到具体worker之前的初始化工作可以在此处完成，一旦完成，初始化的内容将携带到每一个task内（因为提交任务时将bolt序列化到文件中去，在worker起来时再将bolt从文件中反序列化出来）。&lt;/li&gt;
+&lt;li&gt;prepare是当task起来后执行的初始化动作&lt;/li&gt;
+&lt;li&gt;cleanup是当task被shutdown后执行的动作&lt;/li&gt;
+&lt;li&gt;execute是bolt实现核心， 完成自己的逻辑，即接受每一次取消息后，处理完，有可能用collector 将产生的新消息emit出去。在executor中，当程序处理一条消息时，需要执行collector.ack，当程序无法处理一条消息时或出错时，需要执行collector.fail ，详情可以参考 ack机制；&lt;/li&gt;
+&lt;li&gt;declareOutputFields， 定义bolt发送数据，每个字段的含义&lt;/li&gt;
+&lt;li&gt;getComponentConfiguration 获取本bolt的component 配置&lt;/li&gt;
+&lt;/ul&gt;
+
+
+&lt;h3&gt;IBasicBolt&lt;/h3&gt;
+
+&lt;p&gt;很多bolt有些类似的模式:&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;读一个输入tuple&lt;/li&gt;
+&lt;li&gt;根据这个输入tuple发射一个或者多个tuple&lt;/li&gt;
+&lt;li&gt;在execute的方法的最后ack那个输入tuple&lt;/li&gt;
+&lt;/ul&gt;
+
+
+&lt;p&gt;遵循这类模式的bolt一般是函数或者是过滤器, 这种模式太常见，storm为这类模式单独封装了一个接口: IBasicBolt。IBasicBolt继承Icomponent接口，而自己定义了prepare、execute和cleanup三个函数。&lt;/p&gt;
+
+&lt;p&gt;区别就在于IBasicBolt的execute需要传入一个BasicOutputCollector对象，其中定义了不同的emit函数，通过这种方式定义的bolt会在自动ack。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image006.png&quot; alt=&quot;IBasicBolt&quot; /&gt;&lt;/p&gt;
+
+&lt;h2&gt;Spout&lt;/h2&gt;
+
+&lt;h3&gt;IRichSpout&lt;/h3&gt;
+
+&lt;p&gt;与Bolt类似，IRichSpout是最为简单的Spout接口，它实现了ISpout和Icomponent两个接口。其中ISpout接口中定义了：void open(Map conf, TopologyContext context, SpoutOutputCollector collector)，void close()，void activate()，void deactivate()，void nextTuple()。void ack(Object msgId)，void fail(Object msgId)。&lt;/p&gt;
+
+&lt;p&gt;注意：&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;spout对象必须是继承Serializable， 因此要求spout内所有数据结构必须是可序列化的&lt;/li&gt;
+&lt;li&gt;spout可以有构造函数，但构造函数只执行一次，是在提交任务时，创建spout对象，因此在task分配到具体worker之前的初始化工作可以在此处完成，一旦完成，初始化的内容将携带到每一个task内（因为提交任务时将spout序列化到文件中去，在worker起来时再将spout从文件中反序列化出来）。&lt;/li&gt;
+&lt;li&gt;open是当task起来后执行的初始化动作&lt;/li&gt;
+&lt;li&gt;close是当task被shutdown后执行的动作&lt;/li&gt;
+&lt;li&gt;activate 是当task被激活时，触发的动作&lt;/li&gt;
+&lt;li&gt;deactivate 是task被deactive时，触发的动作&lt;/li&gt;
+&lt;li&gt;nextTuple 是spout实现核心， nextuple完成自己的逻辑，即每一次取消息后，用collector 将消息emit出去。&lt;/li&gt;
+&lt;li&gt;ack， 当spout收到一条ack消息时，触发的动作，详情可以参考 ack机制&lt;/li&gt;
+&lt;li&gt;fail， 当spout收到一条fail消息时，触发的动作，详情可以参考 ack机制&lt;/li&gt;
+&lt;li&gt;declareOutputFields， 定义spout发送数据，每个字段的含义&lt;/li&gt;
+&lt;li&gt;getComponentConfiguration 获取本spout的component 配置&lt;/li&gt;
+&lt;/ul&gt;
+
+
+&lt;h3&gt;IRichStateSpout&lt;/h3&gt;
+
+&lt;p&gt;这里还定义了一种IRichStateSpout，不清楚功能.&lt;/p&gt;
+
+&lt;h2&gt;Topology的生命周期&lt;/h2&gt;
+
+&lt;p&gt;这部分主要参照的代码：&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;com.alibaba.jstorm.daemon.nimbus.StatusType&lt;/li&gt;
+&lt;li&gt;com.alibaba.jstorm.cluster.StormStatus&lt;/li&gt;
+&lt;/ul&gt;
+
+
+&lt;p&gt;Topology的状态存储在zookeeper中，包括类型有：kill, killed, monitor, inactive, inactivate, active, activate, startup, remove, rebalance, rebalancing, do-rebalance。其中killed、inactive、active、rebalancing为状态(status)，其他为状态动作(action)。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image007.png&quot; alt=&quot;StatusType&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;状态说明和动作的触发：&lt;/p&gt;
+
+&lt;ul&gt;
+&lt;li&gt;kill：只有当前状态为active/inactive/killed，当client kill Topology时会触发这个动作。&lt;/li&gt;
+&lt;li&gt;monitor：如果当前状态为active，则每Config.NIMBUS_MONITOR_FREQ_SECS seconds会触发这个动作一次，nimbus会重新分配workers。&lt;/li&gt;
+&lt;li&gt;inactivate：当前状态为active时，client会触发这个动作。&lt;/li&gt;
+&lt;li&gt;activate：当前状态为inactive时，client会触发这个动作。&lt;/li&gt;
+&lt;li&gt;startup：当前状态为killed/rebalancing，当nimbus启动时也会触发这个动作。&lt;/li&gt;
+&lt;li&gt;remove：当前状态为killed，在client提交kill命令的一段时间之后触发这个动作&lt;/li&gt;
+&lt;li&gt;rebalance：当前状态为active/inactive，当client提交 rebalance命令后触发这个动作。&lt;/li&gt;
+&lt;li&gt;do-rebalance：当前状态为rebalancing，当client提交rebalance命令一段时间后触发这个动作。&lt;/li&gt;
+&lt;/ul&gt;
+
+
+&lt;p&gt;这里需要说明的是，Jstorm中有四种Topology的状态操作命令：activate、deactivate、kill_topology、Rebalance。分别对应了四种状态。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/jstorm/image008.png&quot; alt=&quot;Topology&quot; /&gt;&lt;/p&gt;
+
+&lt;center&gt;Topology的状态转移图&lt;/center&gt;
+
+
+
+</content>
+   </entry>
+   
+   <entry>
+     <title>数据分析和挖掘方法学习笔记</title>
+     <link href="http://greeensy.github.io/data-mining"/>
+     <updated>2014-06-30T00:00:00+08:00</updated>
+     <id>http://greeensy.github.io/data-mining</id>
+     <content type="html">&lt;h2&gt;数据挖掘基本介绍&lt;/h2&gt;
+
+&lt;p&gt;数据挖掘是从大量的、不完全的、有噪声的、模糊的、随机的数据集中识别有效的、新颖的、潜在有用的，以及最终可理解的模式的过程。它是一门涉及面很广的交叉学科，包括机器学习、数理统计、神经网络、数据库、模式识别、粗糙集、模糊数学等相关技术。&lt;/p&gt;
+
+&lt;h3&gt;数据挖掘背景&lt;/h3&gt;
+
+&lt;p&gt;上世纪九十年代．随着数据库系统的广泛应用和网络技术的高速发展，数据库技术也进入一个全新的阶段，即从过去仅管理一些简单数据发展到管理由各种计算机所产生的图形、图像、音频、视频、电子档案、Web页面等多种类型的复 杂数据，并且数据量也越来越大。在给我们提供丰富信息的同时，也体现出明显的海量信息特征。信息爆炸时代．海量信息给人们带来许多负面影响，最主要的就是有效信息难以提炼。过多无用的信息必然会产生信息距离(the Distance of Information-state Transition，信息状态转移距离，是对一个事物信息状态转移所遇到障碍的测度。简称DIST或DIT)和有用知识的丢失。这也就是约翰•内斯伯特(John Nalsbert)称为的“信息丰富而知识贫乏”窘境。因此，人们迫切希望能对海量数据进行深入分析，发现并提取隐藏在其中的信息．以更好地利用这些数据。但仅以数据库系统的录入、查询、统计等功能，无法发现数据中存在的关系和规则，无法根据现有的数据预测未来的发展趋势。更缺乏挖掘数据背后隐藏知识的手段。正是在这样的条件下，数据挖掘技术应运而生。&lt;/p&gt;
+
+&lt;p&gt;数据清理过程有两种，一种是有监督，有监督过程是在领域专家的指导下，分析收集的数据，去除明显错误的噪音数据和重复记录，填补缺值数据，另一种是无监督，无监督过程是用样本数据训练算法，使其获得一定的经验，并在以后的处理过程中自动采用这些经验完成数据清理工作。&lt;/p&gt;
+
+&lt;h3&gt;数据挖掘步骤&lt;/h3&gt;
+
+&lt;p&gt;如果计划实施数据挖掘，它需要多个步骤，主要包括：定义商业问题、建立数据挖掘模型、分析数据、准备数据、建立模型、评价模型、实施。&lt;/p&gt;
+
+&lt;ol&gt;
+&lt;li&gt;定义商业问题。在开始知识发现之前最先的同时也是最重要的要求就是了解数据和业务问题。必须要对目标有一个清晰明确的定义，即决定到底想干什么。比如想提高电子信箱的利用率时，想做的可能是“提高用户使用率”，也可能是“提高一次用户使用的价值”，要解决这两个问题而建立的模型几乎是完全不同的，必须做出决定。&lt;/li&gt;
+&lt;li&gt;建立数据挖掘库。建立数据挖掘库包括以下几个步骤：数据收集、数据描述和选择、数据质量评估和数据清理、合并与整合、构建元数据、加载数据挖掘库、维护数据挖掘库。&lt;/li&gt;
+&lt;li&gt;分析数据。分析的目的是找到对预测输出影响最大的数据字段，和决定是否需要定义导出字段。如果数据集包含成百上千的字段，那么浏览分析这些数据将是一件非常耗时和累人的事情，这时需要选择一个具有好的界面和功能强大的工具软件来协助你完成这些事情。&lt;/li&gt;
+&lt;li&gt;准备数据。这是建立模型之前的最后一步数据准备工作。可以把此步骤分为4个部分：选择变量、选择记录、创建新变量、转换变量。&lt;/li&gt;
+&lt;li&gt;建立模型。建立模型是一个反复的过程。需要仔细考察不同的模型以判断哪个模型对商业问题最有用。先用一部分数据建立模型，然后再用剩下的数据来测试和验证得到的模型。有时还有第三个数据集，称为验证集，因为测试集可能受模型的特性的影响，这时需要一个独立的数据集来验证模型的准确性。训练和测试数据挖掘模型需要把数据至少分成两个部分：一个用于模型训练，另一个用于模型测试。&lt;/li&gt;
+&lt;li&gt;评价和解释。模型建立好之后，必须评价得到结果、解释模型的价值。从测试集中得到的准确率只对用于建立模型的数据有意义。在实际应用中，需要进一步了解错误的类型和由此带来的相关费用的多少。经验证有效的模型并不一定是正确的模型。造成这一点的直接原因就是模型建立中隐含的各种假定。因此直接在现实世界中测试模型很重要。先在小范围内应用，取得测试数据，觉得满意之后再向大范围推广。&lt;/li&gt;
+&lt;li&gt;实施。模型建立并经验证之后，可以有两种主要的使用方法。第一种是提供给分析人员做参考；另一种是把此模型应用到不同的数据集上。&lt;/li&gt;
+&lt;/ol&gt;
+
+
+&lt;p&gt;因为事物在不断发展变化，很可能过一段时间之后，模型就不再起作用。销售人员都知道，人们的购买方式随着社会的发展而变化。因此随着使用时间的增加，要不断的对模型做重新测试，有时甚者需要重新建立模型。&lt;/p&gt;
+
+&lt;p&gt;数据挖掘可以在任何类型的信息存储上进行，包括关系数据库、数据仓库、事务数据库、先进的数据库系统、展平的文件、WWW（万维网）。数据挖掘的主要任务是描述性的数据挖掘和预测性数据挖掘，下面我们介绍几个在数据挖掘任务中用到的关键技术。&lt;/p&gt;
+
+&lt;h2&gt;数据预处理&lt;/h2&gt;
+
+&lt;p&gt;现实世界中数据大体上都是不完整，不一致的脏数据，比如无法直接进行数据挖掘，挖掘结果差强人意。为了提高数据挖掘的质量产生了数据预处理技术。 数据预处理有多种方法：数据清理，数据集成，数据变换，数据归约等。这些数据处理技术在数据挖掘之前使用，大大提高了数据挖掘模式的质量，降低实际挖掘所需要的时间。预处理在数据挖掘中占有很重要的位置，如图1所示。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/DataMining/preprocesing.jpg&quot; alt=&quot;preprocesing&quot; /&gt;&lt;/p&gt;
+
+&lt;center&gt;图1 预处理在知识发现中所占分量&lt;/center&gt;
+
+
+&lt;h3&gt;数据清理&lt;/h3&gt;
+
+&lt;p&gt;数据清理要去除源数据集中的噪声和无关数据，处理遗漏数据和清洗脏数据，去除空白数据域和知识背景上的白噪声，考虑时间顺序和数据变化等（主要包括重复数据处理和缺值数据处理），此外，还要完成一些数据类型的转换。&lt;/p&gt;
+
+&lt;p&gt;数据清理有两类基本的方法：
+1. 缺失数据处理： 目前最常用的方法是使用最可能的值填充缺失值，比如可以用回归、贝叶斯形式化方法工具或判定树归纳等确定缺失值。这类方法依靠现有的数据信息来推测缺失值，使缺失值有更大的机会保持与其他属性之间的联系。还有其他一些方法来处理缺失值，如用一个全局常量替换缺失值、使用属性的平均值填充缺失值或将所有元组按某些属性分类，然后用同一类中属性的平均值填充缺失值。如果缺失值很多，这些方法可能误导挖掘结果。如果缺失值很少，可以忽略缺失数据。
+2. 噪声数据处理： 噪声是一个测量变量中的随机错误或偏差，包括错误的值或偏离期望的孤立点值。目前最广泛的是应用数据平滑技术处理，具体包括：①分箱技术，将存储的值分布到一些箱中，用箱中的数据值来局部平滑存储数据的值。具体可以采用按箱平均值平滑、按箱中值平滑和按箱边界平滑；②回归方法，可以找到恰当的回归函数来平滑数据。线性回归要找出适合两个变量的“最佳”直线，使得一个变量能预测另一个。多线性回归涉及多个变量，数据要适合一个多维面；③计算机检查和人工检查结合方法，可以通过计算机将被判定数据与已知的正常值比较，将差异程度大于某个阈值的模式输出到一个表中，然后人工审核表中的模式，识别出孤立点；④聚类技术，将类似的值组织成群或“聚类”，落在聚类集合之外的值被视为孤立点。孤立点可能是垃圾数据，也可能为我们提供重要信息。对于确认的孤立点垃圾数据将从数据库中予以清除。&lt;/p&gt;
+
+&lt;h3&gt;数据集成&lt;/h3&gt;
+
+&lt;p&gt;数据集成就是将多个数据源中的数据合并存放在一个同一的数据存储（如数据仓库、数据库等）的一种技术和过程，数据源可以是多个数据库、数据立方体或一般的数据文件。数据集成涉及3个问题：&lt;/p&gt;
+
+&lt;ol&gt;
+&lt;li&gt;模式集成: 涉及实体识别，即如何将不同信息源中的实体匹配来进行模式集成。通常借助于数据库或数据仓库的元数据进行模式识别；&lt;/li&gt;
+&lt;li&gt;冗余数据集成: 在数据集成中往往导致数据冗余，如同一属性多次出现、同一属性命名不一致等。对于属性间冗余，可以先采用相关性分析检测，然后删除；&lt;/li&gt;
+&lt;li&gt;数据值冲突的检测与处理: 由于表示、比例、编码等的不同，现实世界中的同一实体，在不同数据源的属性值可能不同。这种数据语义上的歧义性是数据集成的最大难点，目前没有很好的办法解决。&lt;/li&gt;
+&lt;/ol&gt;
+
+
+&lt;h3&gt;数据变换&lt;/h3&gt;
+
+&lt;p&gt;数据变换是采用线性或非线性的数学变换方法将多维数据压缩成较少维数的数据，消除它们在时间、空间、属性及精度等特征表现方面的差异。这方法虽然对原始数据都有一定的损害，但其结果往往具有更大的实用性。常见数据变换方法如下：&lt;/p&gt;
+
+&lt;ol&gt;
+&lt;li&gt;数据平滑：去除数据中的噪声数据，将连续数据离散化，增加粒度。通常采用分箱、聚类和回归技术。&lt;/li&gt;
+&lt;li&gt;数据聚集：对数据进行汇总和聚集。&lt;/li&gt;
+&lt;li&gt;数据概化：减少数据复杂度，用高层概念替换。&lt;/li&gt;
+&lt;li&gt;数据规范化：使属性数据按比例缩放，使之落入一个小的特定区域；常用的规范化方法有最小—最大规范化、z—score规范化、按小数定标规范化等。&lt;/li&gt;
+&lt;li&gt;属性构造：构造出新的属性并添加到属性集中，以帮助挖掘过程。应用实例表明，通过数据变换可用相当少的变量来捕获原始数据的最大变化。具体采用哪种变换方法应根据涉及的相关数据的属性特点而定，根据研究目的可把定性问题定量化，也可把定量问题定性化。&lt;/li&gt;
+&lt;/ol&gt;
+
+
+&lt;h3&gt;数据规约&lt;/h3&gt;
+
+&lt;p&gt;数据挖掘时往往数据量非常大，在少量数据上进行挖掘分析需要很长的时间，数据归约技术可以用来得到数据集的归约表示，它小得多，但仍然接近于保持原数据的完整性，并结果与归约前结果相同或几乎相同。&lt;/p&gt;
+
+&lt;p&gt;数据归约技术可以用来得到数据集的归约表示，它接近于保持原数据的完整性，但数据量比原数据小得多。与非归约数据相比，在归约的数据上进行挖掘，所需的时间和内存资源更少，挖掘将更有效，并产生相同或几乎相同的分析结果。几种数据归约的方法：&lt;/p&gt;
+
+&lt;ol&gt;
+&lt;li&gt;维归约: 通过删除不相关的属性（或维）减少数据量。不仅压缩了数据集，还减少了出现在发现模式上的属性数目。通常采用属性子集选择方法找出最小属性集，使得数据类的概率分布尽可能地接近使用所有属性的原分布。属性子集选择的启发式方法技术有：①逐步向前选择，由空属性集开始，将原属性集中“最好的”属性逐步填加到该集合中；②逐步向后删除，由整个属性集开始，每一步删除当前属性集中的“最坏”属性；③向前选择和向后删除的结合，每一步选择“最好的”属性，删除“最坏的”属性；④判定树归纳，使用信息增益度量建立分类判定树，树中的属性形成归约后的属性子集。&lt;/li&gt;
+&lt;li&gt;数据压缩: 应用数据编码或变换，得到原数据的归约或压缩表示。数据压缩分为无损压缩和有损压缩。比较流行和有效的有损数据压缩方法是小波变换和主要成分分析。小波变换对于稀疏或倾斜数据以及具有有序属性的数据有很好的压缩结果。主要成分分析计算花费低，可以用于有序或无序的属性，并且可以处理稀疏或倾斜数据。&lt;/li&gt;
+&lt;li&gt;数值归约: 数值归约通过选择替代的、较小的数据表示形式来减少数据量。数值归约技术可以是有参的，也可以是无参的。有参方法是使用一个模型来评估数据，只需存放参数，而不需要存放实际数据。有参的数值归约技术有以下2种：①回归：线性回归和多元回归；②对数线性模型：近似离散属性集中的多维概率分布。无参的数值归约技术有3种：①直方图：采用分箱技术来近似数据分布，是一种流行的数值归约形式。其中V-最优和MaxDiff直方图是最精确和最实用的；②聚类：聚类是将数据元组视为对象，它将对象划分为群或聚类，使得在一个聚类中的对象“类似”，而与其他聚类中的对象“不类似”，在数据归约时用数据的聚类代替实际数据；③选样：用数据的较小随机样本表示大的数据集，如简单选样、聚类选样和分层选样等。&lt;/li&gt;
+&lt;li&gt;概念分层: 概念分层通过收集并用较高层的概念替换较低层的概念来定义数值属性的一个离散化。概念分层可以用来归约数据，通过这种概化尽管细节丢失了，但概化后的数据更有意义、更容易理解，并且所需的空间比原数据少。&lt;/li&gt;
+&lt;/ol&gt;
+
+
+&lt;h2&gt;关联规则&lt;/h2&gt;
+
+&lt;p&gt;从事务数据库，关系数据库和其他信息存储中的大量数据的项集之间发现有趣的、频繁出现的模式、关联和相关性。关联规则的形式如图2-左，属性-值集如图2-右。比如，在同一个交易中， 一个顾客买某品牌的啤酒后，往往也会买另一个品牌的薯条。因为挖掘关联规则的时候也许会需要在大规模的事务数据库中重复的扫描，对处理能力要求较高。下面是关联规则不同分类方式。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/DataMining/guanlian.jpg&quot; alt=&quot;guanlian&quot; /&gt;&lt;/p&gt;
+
+&lt;center&gt;图2 关联规则的形式和属性-值集&lt;/center&gt;
+
+
+&lt;ol&gt;
+&lt;li&gt;按关联规则中处理变量的类别，可将关联规则分为布尔型和数值型布尔型关联规则中对应变量都是离散变量或类别变量,它显示的是离散型变量间的关系,比如“买啤酒→买婴儿尿布”;数值型关联规则处理则可以与多维关联或多层关联规则相结合,处理数值型变量,如“月收入5000元→每月交通费约800元”。&lt;/li&gt;
+&lt;li&gt;按关联规则中数据的抽象层次，可以分为单层关联规则和多层关联规则单层关联规则中,所有变量都没有考虑到现实的数据具有多个不同的层次；而多层关联规则中,对数据的多层性已经进行了充分的考虑。比如“买夹克→买慢跑鞋”是一个细节数据上的单层关联规则,而“买外套→慢跑鞋”是一个较高层次和细节层次间的多层关联规则。&lt;/li&gt;
+&lt;li&gt;按关联规则中涉及到的数据维数可以分为单维关联规则和多维关联规则单维关联规则只涉及数据的一个维度（或一个变量），如用户购买的物品;而多维关联规则则要处理多维数据,涉及多个变量,也就是说,单维关联规则处理单一属性中的关系,而多维关联规则则处理多个属性间的某些关系。比如“买啤酒→买婴儿尿布”只涉及用户购买的商品,属于单维关联规则,而“喜欢野外活动→购买慢跑鞋”涉及到两个变量的信息,属于二维关联规则。&lt;/li&gt;
+&lt;/ol&gt;
+
+
+&lt;h2&gt;分类和预测&lt;/h2&gt;
+
+&lt;p&gt;数据库内容丰富，蕴藏大量信息，可以用来做出智能的商务决策。分类和预测是两种数据分析形式，可以用于提取描述重要数据类的模型或预测未来的数据趋势。然而，分类是预测分类标号（或离散值），而预测建立连续值函数模型。例如，可以建立一个分类模型，对银行贷款的安全或风险进行分类；而可以建立预测模型，给定潜在顾客的收入和职业，预测他们在计算机设备上的花费。许多分类和预测方法已被机器学习、专家系统、统计和神经生物学方面的研究者提出。大部分算法是内存算法，通常假定数据量很小。最近的数据挖掘研究建立在这些工作之上，开发了可规模化的分类和预测技术，能够处理大的、驻留磁盘的数据。这些技术通常考虑并行和分布处理。&lt;/p&gt;
+
+&lt;p&gt;数据分类是一个两步过程（图3）。第一步，建立一个模型，描述预定的数据类或概念集。通过分析由属性描述的数据库元组来构造模型。假定每个元组属于一个预定义的类，由一个称作类标号属性的属性确定。对于分类，数据元组也称作样本、实例或对象。为建立模型而被分析的数据元组形成训练数据集。训练数据集中的单个元组称作训练样本，并随机地由样本群选取。由于提供了每个训练样本的类标号，该步也称作有指导的学习（即，模型的学习在被告知每个训练样本属于哪个类的“指导”下进行）。&lt;/p&gt;
+
+&lt;p&gt;第二步（图3(b)），使用模型进行分类。首先评估模型（分类法）的预测准确率。保持（holdout）方法是一种使用类标号样本测试集的简单方法。这些样本随机选取，并独立于训练样本。模型在给定测试集上的准确率是正确被模型分类的测试样本的百分比。对于每个测试样本，将已知的类标号与该样本的学习模型类预测比较。注意，如果模型的准确率根据训练数据集评估，评估可能是乐观的，因为学习模型倾向于过分适合数据（即，它可能并入训练数据中某些异常，这些异常不出现在总体样本群中）。因此，使用测试集。&lt;/p&gt;
+
+&lt;p&gt;如果认为模型的准确率可以接受，就可以用它对类标号未知的数据元组或对象进行分类。（这种数据在机器学习也称为“未知的”或“先前未见到的”数据）。&lt;/p&gt;
+
+&lt;p&gt;分类和预测具有广泛的应用，包括信誉证实、医疗诊断、性能预测和选择购物。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/DataMining/Classification.jpg&quot; alt=&quot;Classification&quot; /&gt;&lt;/p&gt;
+
+&lt;center&gt;图3  数据分类过程：(a) 学习：用分类算法分析训练数据。这里，类标号属性是credit_rating，学习模型或分类法以分类规则形式提供。(b) 分类：测试数据用于评估分类规则的准确率。如果准确率是可以接受的，则规则用于新的数据元组分类&lt;/center&gt;
+
+
+&lt;h2&gt;聚类分析&lt;/h2&gt;
+
+&lt;p&gt;设想要求对一个数据对象的集合进行分析，但与分类不同的是，它要划分的类是未知的。聚类(clustering)就是将数据对象分组成为多个类或簇(cluster)，在同一个簇中的对象之间具有较高的相似度，而不同簇中的对象差别较大。相异度是基于描述对象的属性值来计算的。距离是经常采用的度量方式。聚类分析源于许多研究领域，包括数据挖掘，统计学，生物学，以及机器学习。&lt;/p&gt;
+
+&lt;p&gt;作为统计学的一个分支，聚类分析已经被广泛地研究了许多年，主要集中在基于距离的聚类分析。基于k-means(k-平均值)，k-medoids(k-中心)和其他一些方法的聚类分析工具已经被加入到许多统计分析软件包或系统中，例如S-Plus，SPSS，以及SAS。在机器学习领域，聚类是无指导学习(unsupervised learning)的一个例子。与分类不同，聚类和无指导学习不依赖预先定义的类和训练样本。由于这个原因，聚类是通过观察学习，而不是通过例子学习。在概念聚类（conceptual clustering）中，一组对象只有当它们可以被一个概念描述时才形成一个簇。这不同于基于几何距离来度量相似度的传统聚类。概念聚类由两个部分组成：（1）发现合适的簇；（2）形成对每个簇的描述。&lt;/p&gt;
+
+&lt;p&gt;聚类应用范围也比较广。在商业上，聚类能帮助市场分析人员从客户基本库中发现不同的客户群，并且用购买模式来刻画不同的客户群的特征。在生物学上，聚类能用于推导植物和动物的分类，对基因进行分类，获得对种群中固有结构的认识。聚类在地球观测数据库中相似地区的确定，汽车保险持有者的分组，及根据房子的类型，价值，和地理位置对一个城市中房屋的分组上也可以发挥作用。聚类也能用于对Web上的文档进行分类，以发现信息。作为一个数据挖掘的功能，聚类分析能作为一个独立的工具来获得数据分布的情况，观察每个簇的特点，集中对特定的某些簇作进一步的分析。此外，聚类分析可以作为其他算法（如分类等）的预处理步骤，这些算法再在生成的簇上进行处理。&lt;/p&gt;
+
+&lt;h2&gt;复杂类型数据的挖掘&lt;/h2&gt;
+
+&lt;h3&gt;空间数据库挖掘&lt;/h3&gt;
+
+&lt;p&gt;与关系数据库不同，空间数据描述涉及许多特征。它包含拓扑和（或）距离信息；它们按照复杂多维空间索引结构进行组织；并通过空间数据存取方法进行存取。它常常还需要进行空间推理、地理计算和知识表示技术。空间数据挖掘需要将数据挖掘与空间数据库技术结合起来。空间数据挖掘的一项重要工作就是探索有效空间数据挖掘技术，通常是将传统的空间分析方法加以扩展，重点解决高效性和可伸缩性，与数据库系统紧密结合，改进与用户的交互，以及新的知识的发现。空间分析包括空间聚类、空间分类和空间趋势分析。&lt;/p&gt;
+
+&lt;ol&gt;
+&lt;li&gt;空间关联分析：与在事务数据库和关系数据库中挖掘关联规则类似，也可以从空间数据库中挖掘空间关联规则，然而由于空间关联挖掘需要对大量空间对象中的多种关系进行评估。这一过程可能开销很大。这里可利用一个被称为主动提炼有价值的挖掘优化方法，来帮助进行空间关联分析。该方法首先利用快速算法粗略挖掘大的数据集；然后利用更费时的算法对粗略挖掘所获数据集进行更一步处理以改善其挖掘质量。&lt;/li&gt;
+&lt;li&gt;空间聚类：在一个大规模多维数据集中，借助特定的距离计算方法，空间数据聚类分析就应该识别出聚类或密集区域，聚类分析通常是将空间聚类作为示例和应用领域。&lt;/li&gt;
+&lt;li&gt;空间分类和趋势分析&lt;/li&gt;
+&lt;/ol&gt;
+
+
+&lt;p&gt;空间分类就是分析空间对象和推导出分类模式，如决策树，以及与一定空间性质相关的，如高速公路、河流，或地区的邻居（情况）。&lt;/p&gt;
+
+&lt;p&gt;空间趋势分析是完成另一项任务。也就是：发现空间维上的变化和趋势。通常趋势分析是检测时间（维）的变化，如时序数据中的时模式变化，空间趋势检测则将时间换成了空间，即研究空间中非空间和空间数据变化的趋势。例如：在从城市中心向外推移空间中的经济情势的变化趋势，或从海洋向内陆移动空间中植物或气候的变化趋势等。这样的分析中，常常用到利用空间数据结构和存取方法的回归和相关分析方法。&lt;/p&gt;
+
+&lt;p&gt;目前虽然在空间分类和空间趋势分析方面有一些研究，但在时空数据挖掘方面却少有人去研究。未来还需要在时空数据挖掘方法与应用做必要的研究。&lt;/p&gt;
+
+&lt;p&gt;空间数据挖掘可以帮助理解空间数据、发现空间关系和空间与非空间数据间关系、构造空间知识库、重组空间数据库，以及优化空间查询等。此外也可以广泛应用于地理信息系统、地理市场、遥感、图像数据库探索、医疗成像、导航、交通控制、环保和许多其它利用空间数据的领域。&lt;/p&gt;
+
+&lt;h3&gt;多媒体数据库挖掘&lt;/h3&gt;
+
+&lt;p&gt;随着视频-音频设备、C-ROMs和互联网应用的普及，许多数据库中存有大量的多媒体对象，其中包括：视频数据、音频数据、图像数据、序列数据和超文本数据（其中包含文本、链接和标记）。存储和管理大量多媒体对象的数据库系统就称为是多媒体数据库系统。典型的多媒体数据库就是美国航空航天局的A󰀂.（地球观测系统）多媒体数据库。还有其它图像数据库、视频/音频数据库、人类基因数据库和互联网数据库，它们均是多媒体数据库。在多媒体上进行的操作有下面三类：&lt;/p&gt;
+
+&lt;ol&gt;
+&lt;li&gt;多媒体数据的相似搜索：一种是基于描述的检索系统，主要是在图象描述之上建立标引和执行对象检索，如关键字，标题，尺寸，创建时间等；另一种是基于内容的检索系统，它支持基于图象内容的检索，如颜色构成，质地，形状，对象，和小波变换等。&lt;/li&gt;
+&lt;li&gt;多媒体数据的分类和预测分析: 在所报道的图像数据挖掘应用中，决策树分类是其中一种主要的数据挖掘方法。如：天空图像可由天文学家分类后作为训练样本；然后根据亮度、面积、密度、动量、方位等性质，构造识别星系、恒星和星体的模型；最后大量通过天文望远镜或太空观测站获得的图像，可以通过该模型进行测试以便识别出新的空间物体。类似的研究已使得成功地发现金星上的火山。
+挖掘这类图像数据，一个重要工作就是数据的预处理，如消除噪声、数据选择和特征的抽取；因为这类图像中包含了噪声，或图片是从不同角度采集的等。除了利用模式识别中的标准方法（如边缘检测、Hough转换）外，还可以将图像分解为共扼自适应概率模型以便处理其中的不确定性。由于图像数据常常非常大，因此就需要强有力处理能力，如并行处理和分布式处理就很有用。&lt;/li&gt;
+&lt;li&gt;多媒体数据中的关联规则挖掘: 从图像和视频数据库中可以挖掘关联规则。鉴于关联规则包含多媒体对象，因此至少可以将这类关联规则分为以下三类：①图像内容与非图像内容特征之间的关联。一个规则“若图像上部至少有50%是蓝色的，那它就可能代表蓝天”；就属于这类规则。因为图像内容与关键字“蓝天”发生关联。②没有空间关系的图像内容间的关联。一个规则“若一个图像包含两个蓝方框，那它就可能包含一个红色园”；就属于这类规则。因为所描述的关联均是关于图像内容的。③有空间关系的图像内容间的关联。一个规则“若两个黄方框之间有一个红色三角形，那下面就可能有一个大的椭圆物体”；就属于这类规则。因为所描述的图像相关联的对象具有空间关系。&lt;/li&gt;
+&lt;/ol&gt;
+
+
+&lt;p&gt;为挖掘多媒体对象间的关联（知识），就需要将一个图像当作一个事务来处理；首先发现不同图像中频繁出现的模式；但在多媒体数据库中挖掘关联与在事务数据库挖掘有一些细微的不同。&lt;/p&gt;
+
+&lt;h3&gt;时序数据和序列数据的挖掘&lt;/h3&gt;
+
+&lt;p&gt;一个时序数据库包含随时间变化而发生的数值或事件序列。时序数据库应用也较为普遍，如：对证券市场每日波动的研究、商业交易事务序列、动态生产过程踪迹、看病治疗过程、网页读取序列等等。本节将要介绍挖掘时序数据和序列数据的几个重要方面，其中包括：趋势分析、相似搜索和（从时间相关数据中）挖掘序列模式与周期模式。&lt;/p&gt;
+
+&lt;ol&gt;
+&lt;li&gt;趋势分析：通过对趋势，循环，季节和非规则成分的运动的系统分析，人们可以在较合理的情况下，制定出长期或短期的预测（即预报时序）。它包含四中分析，①长期或趋势变化。这是有关一个时序在一个大的时间间隔内的总体变化方向。趋势变化是由趋势曲线来表示。确定这种趋势曲线的典型方法就是最小平方方法、加权移动平均方法等。②循环变化。这是指趋势曲线所表现出的一种长期振荡。这种循环可能也可能不是周期的，也就是说它们在相同时间间隔，可能有也可能没有相似的变化模式。③季节性变化。这是有关时序数据在连续年分的各相应月中所表现出相同或几乎相同的模式。这种变化是由于每年所重复发生事件而引起的。如在春节期间的销售额猛增。④无规律变化。这是有关时序数据所表现出的漫无规律的变化。它是由随机无规律事件所引起的。如：公司人事变动的宣布。&lt;/li&gt;
+&lt;li&gt;相似搜索：找出与给定查询序列最接近的数据序列。子序列匹配（subsequence matching）是找出与给定序列相似的所有数据序列。整体序列匹配（whole sequence matching）是找出彼此间相似的序列。由于现实世界中大多数应用无法确保匹配的子序列能够沿时间轴完美地排放。这样各匹配子序列之间就存在不匹配的空隙，需要对它们进行缩放和转换。在一个改进的相似模型中，用户可以设置有关参数，如：滑动窗口的大小、匹配比例和最大空隙等，对于相似性分析，时序数据通过幅度缩放和偏差转换进行规格化。两个子序列如果一个落在另一个里面相差ε（ε是由用户指定的很小值），那就认为这两个子序列相似。忽略异常值，两个序列如果都有足够不相重叠（按时间顺序排放）相似子序列，那么它们就是相似的。&lt;/li&gt;
+&lt;li&gt;时序模式挖掘：挖掘序列模式就是挖掘与时间或其它序列有关的频繁发生模式。例如：“一个九个月前购买赛洋的顾客可能会在一个月内购买新的CPU”，这就是一个序列模式。鉴于许多商业交易、电信记录、天气数据和生产过程都是时序数据，因此序列模式挖掘在对这类数据进行分析时肯定是很有用的。时序模式挖掘涉及到一些参数的设置，这些参数设置的好坏对序列模式挖掘结果影响很大。第一个参数数就是时间序列的时间长度；可以将数据库中的整个序列或用户所选择的序列（如2000年）作为时间序列的长度；第二个参数数是事件窗口w，一系列在一段时间内发生的事件在特定的分析中可以看成是一起发生的。如果一个事件窗口w被设置为同序一样长，那就会发现对时间不敏感的频繁模式，也就是基本关联模式。第三个参数数就是发现模式中事件发生的时间间隔int。若将int设为0，就意味着没有间隔，也就是发现严格的连续时间序列。关于时序模式挖掘方法，大多挖掘频繁序列模式的研究都是针对不同的参数设置，以及采用Apriori启发知识和与Apriori类似作了相应改动的挖掘方法。&lt;/li&gt;
+&lt;li&gt;周期分析： 挖掘周期性模式，也就是在时序数据库中搜索重复出现的模式，它也是一种重要的数据挖掘问题；并具有广泛的应用，例如：季节、潮汐、每天的交通模式，以及每周电视节目等等，都包含了一定周期性模式。挖掘周期性模式问题可以分为以下几类：①挖掘所有周期性模式；②挖掘部分周期模式；③挖掘循环关联规则。完全周期就是指时间上的每一点都对时序中的周期性行为（模式）起作用。大多挖掘部分周期模式和循环关联规则的研究都利用了Apriori启发知识，以及对Apriori挖掘方法做了相应的调整。在挖掘序列模式和周期性模式方法还可以利用约束条件来帮助挖掘工作更好地进行。&lt;/li&gt;
+&lt;/ol&gt;
+
+
+&lt;h3&gt;文本数据库挖掘&lt;/h3&gt;
+
+&lt;p&gt;在大多文本数据库所存放的数据都是半结构化的数据，即它们既不是完全结构化也不是完全无结构的。如：一个文档中包含一些结构化的字段，诸如标题、作者、出版时间、长度和类别等，但也包含大量无结构的文本内容，诸如摘要和内容。近来在数据库研究领域，对半结构化数据集如何进行建模和操作已有了许多研究成果。此外信息检索技术，如文本索引方法，也已应用到了对非结构化文档处理上。文本挖掘有以下两种方法：&lt;/p&gt;
+
+&lt;ol&gt;
+&lt;li&gt;基于关键字关联分析:基于关键字关联分析就是首先收集频繁一起出现的项或关键字集合；然后发现其中所存在的关联或相关联系。 与大多文本数据库分析类似，关联分析首先对文本数据库进行语法分析、抽取词根、消去stop单词等预处理；然后调用关联挖掘算法。在一个文档数据库中，可以将每个文档视为一个事务，而文档中的一组关键字则作为事务中项集合。这样文档数据库就具有以下格式： {document_id,a_set_of_keywords}。这样在文档数据库中关键字关联挖掘问题就转换为在事务数据库中项关联挖掘问题。这类算法已经有了许多。&lt;/li&gt;
+&lt;li&gt;文档分类分析: 自动文档分类是一个很重要的文本挖掘任务。由于存在巨大的在线文档，因此有必要对这些文档进行分类（尽管这是一项费力的工作），以方便文档检索和之后的分析。一般自动文档分类的操作步骤如下：首先将一组已分好类的文档作为训练样本集合；然后分析训练样本集合以获得一个分类模式（以决策树形式或决策规则形式表示）。这样分类模式还需要在测试过程中不断的完善。这样获得的分类模式也可以用于其它在线文档的分类。文档分类的一个有效方法就是：探索利用基于关联的分类方法，以便能够利用常常一起出现的关键字进行分类分析。&lt;/li&gt;
+&lt;/ol&gt;
+
+
+&lt;h3&gt;Web挖掘&lt;/h3&gt;
+
+&lt;p&gt;Web挖掘有多个难点：对数据仓库和数据挖掘而言，Web太庞大了；Web页面数据太复杂：没有结构，不标准；不断增长，不断变化；广泛的用户群体；仅有很小部分的Web数据是有用的或相关的，99%的Web 信息对99% 的Web用户是无用的。
+在Web上的挖掘操作有三种：web内容挖掘，web结构挖掘和web使用记录的挖掘，如图4所示。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/DataMining/Web.jpg&quot; alt=&quot;Web&quot; /&gt;&lt;/p&gt;
+
+&lt;center&gt;图4 Web挖掘操作分类&lt;/center&gt;
+
+
+&lt;ol&gt;
+&lt;li&gt;Web内容挖掘就是Web页面上文本内容的挖掘，是普通文本挖掘结合Web信息特征的一种特殊应用。目前应用较多的是页面内容特征提取，即提取页面上重要的名词、数字等等；另一方面是对页面进行聚类，即将大量Web页面进行各种方式的分类组合，如按站点的主题类别进行聚类、按页面的内容进行聚类等，可以发现其中可能存在的隐含模式等。&lt;/li&gt;
+&lt;li&gt;web结构挖掘属于信息结构（IA）方面的研究内容。对于一个站点而言，按结构层次高低可以分出以下三种结构：站点结构：指的是整个站点的框架结构；页面（框架）结构：较为简单，这是由于许多网页由框架（Frame）组成而产生的；页内结构：单个网页里面也存在一定层次结构，对页内文档结构的提取有助于分析页面内容，提取页面信息。&lt;/li&gt;
+&lt;li&gt;Web日志（使用）挖掘就是在服务端对用户访问网络的活动记录进行挖掘，目前这方面的实际应用最为广泛，大部分集中在银行业、证券业、电子商务等方面。 Web日志挖掘的主要目的包括网络广告分析、流量、用户分类、网络欺骗预防等等。&lt;/li&gt;
+&lt;/ol&gt;
+
+</content>
+   </entry>
+   
+   <entry>
+     <title>大数据高级查询语言引擎总结</title>
+     <link href="http://greeensy.github.io/query-computing"/>
+     <updated>2014-06-20T00:00:00+08:00</updated>
+     <id>http://greeensy.github.io/query-computing</id>
+     <content type="html">&lt;p&gt;高级查询语言引擎用来处理大规模数据，一般运行在其它分布式处理系统的上层，它提供类SQL的查询语言，同时它通过解析器将查询语言转化为分布式处理作业，并调用分布式处理系统进行运算。它为复杂的海量数据并行计算提供了了简单的操作和编程接口。&lt;/p&gt;
+
+&lt;h2&gt;Hive&lt;/h2&gt;
+
+&lt;p&gt;Hive是基于Hadoop的一个数据仓库工具，可以将结构化的数据文件映射为一张数据库表，并提供简单的sql查询功能，可以将sql语句转换为MapReduce任务进行运行。 其优点是学习成本低，可以通过类SQL语句快速实现简单的MapReduce统计，不必开发专门的MapReduce应用，十分适合数据仓库的统计分析。&lt;/p&gt;
+
+&lt;p&gt;它提供了一系列的工具，可以用来进行数据提取转化加载（ETL），这是一种可以存储、查询和分析存储在 Hadoop 中的大规模数据的机制。Hive 定义了简单的类 SQL 查询语言，称为 HQL，它允许熟悉 SQL 的用户查询数据。同时，这个语言也允许熟悉 MapReduce 开发者的开发自定义的 mapper 和 reducer 来处理内建的 mapper 和 reducer 无法完成的复杂的分析工作。Hive 没有专门的数据格式。 Hive 可以很好的工作在 Thrift 之上，控制分隔符，也允许用户指定数据格式。&lt;/p&gt;
+
+&lt;p&gt;Hive的用户接口主要有三个：CLI，Client 和 WUI。其中最常用的是 CLI，Cli 启动的时候，会同时启动一个 Hive 副本。Client 是 Hive 的客户端，用户连接至 Hive Server。在启动 Client 模式的时候，需要指出 Hive Server 所在节点，并且在该节点启动 Hive Server。 WUI 是通过浏览器访问 Hive。&lt;/p&gt;
+
+&lt;p&gt;Hive 将元数据存储在数据库中，如 mysql、derby。Hive 中的元数据包括表的名字，表的列和分区及其属性，表的属性（是否为外部表等），表的数据所在目录等。&lt;/p&gt;
+
+&lt;p&gt;解释器、编译器、优化器完成 HQL 查询语句从词法分析、语法分析、编译、优化以及查询计划的生成。生成的查询计划存储在 HDFS 中，并在随后由 MapReduce 调用执行。&lt;/p&gt;
+
+&lt;p&gt;Hive 的数据存储在 HDFS 中，大部分的查询由 MapReduce 完成（包含 * 的查询，比如 select * from tbl 不会生成 MapReduce 任务）。&lt;/p&gt;
+
+&lt;h2&gt;Pig&lt;/h2&gt;
+
+&lt;p&gt;Pig是一种编程语言，它简化了Hadoop常见的工作任务。Pig可加载数据、表达转换数据以及存储最终结果。Pig内置的操作使得半结构化数据变得有意义（如日志文件）。同时Pig可扩展使用Java中添加的自定义数据类型并支持数据转换。&lt;/p&gt;
+
+&lt;p&gt;Pig的查询经过Pig Latin的转换后变成了一道MapReduce的作业，通过MapReduce多个线程，进程或者独立系统并行执行处理的结果集进行分类和归纳。Map() 和 Reduce() 两个函数会并行运行，即使不是在同一的系统的同一时刻也在同时运行一套任务，当所有的处理都完成之后，结果将被排序，格式化，并且保存到一个文件。Pig利用MapReduce将计算分成两个阶段，第一个阶段分解成为小块并且分布到每一个存储数据的节点上进行执行，对计算的压力进行分散，第二个阶段聚合第一个阶段执行的这些结果，这样可以达到非常高的吞吐量，通过不多的代码和工作量就能够驱动上千台机器并行计算，充分的利用计算机的资源，打消运行中的瓶颈。也就是说，Pig最大的作用就是对mapreduce算法(框架)实现了一套shell脚本 ，类似我们通常熟悉的SQL语句，在Pig中称之为Pig Latin，在这套脚本中我们可以对加载出来的数据进行排序、过滤、求和、分组(group by)、关联(Joining)，Pig也可以由用户自定义一些函数对数据集进行操作，也就是传说中的UDF(user-defined functions)。&lt;/p&gt;
+
+&lt;p&gt;Pig Latin 是一个相对简单的语言，它可以执行语句。一调语句 就是一个操作，它需要输入一些内容（比如代表一个元组集的包），并发出另一个包作为其输出。一个包 就是一个关系，与表类似，您可以在关系数据库中找到它（其中，元组代表行，并且每个元组都由字段组成）。用 Pig Latin 编写的脚本往往遵循以下特定格式，从文件系统读取数据，对数据执行一系列操作（以一种或多种方式转换它），然后，将由此产生的关系写回文件系统。Pig 拥有大量的数据类型，不仅支持包、元组和映射等高级概念，还支持简单的数据类型，如 int、long、float、double、chararray 和 bytearray。如果使用简单的类型，除了称为 bincond 的条件运算符（其操作类似于 C ternary 运算符）之外，还有其他许多算术运算符（比如 add、subtract、multiply、divide 和 module）。并且，还有一套完整的比较运算符，包括使用正则表达式的丰富匹配模式。所有 Pig Latin 语句都需要对关系进行操作（并被称为关系运算符）。有一个运算符用于从文件系统加载数据和将数据存储到文件系统中。有一种方式可以通过迭代关系的行来 FILTER 数据。此功能常用于从后续操作不再需要的关系中删除数据。另外，如果需要对关系的列进行迭代，而不是对行进行迭代，可以使用 FOREACH 运算符。FOREACH 允许进行嵌套操作，如 FILTER 和 ORDER，以便在迭代过程中转换数据。ORDER 运算符提供了基于一个或多个字段对关系进行排序的功能。JOIN 运算符基于公共字段执行两个或两个以上的关系的内部或外部联接。SPLIT 运算符提供了根据用户定义的表达式将一个关系拆分成两个或两个以上关系的功能。最后，GROUP 运算符根据某个表达式将数据分组成为一个或多个关系。&lt;/p&gt;
+
+&lt;h2&gt;Impala&lt;/h2&gt;
+
+&lt;p&gt;Impala是Cloudera公司主导开发的新型查询系统，它提供SQL语义，能查询存储在Hadoop的HDFS和HBase中的PB级大数据。已有的Hive系统虽然也提供了SQL语义，但由于Hive底层执行使用的是MapReduce引擎，仍然是一个批处理过程，难以满足查询的交互性。相比之下，Impala的最大特点也是最大卖点就是它的快速。&lt;/p&gt;
+
+&lt;p&gt;Impala最开始是参照 Dremel系统进行设计的。Dremel是Google的交互式数据分析系统，它构建于Google的GFS（Google File System）等系统之上，支撑了Google的数据分析服务BigQuery等诸多服务。Dremel的技术亮点主要有两个：一是实现了嵌套型数据的列存储；二是使用了多层查询树，使得任务可以在数千个节点上并行执行和聚合结果。列存储在关系型数据库中并不陌生，它可以减少查询时处理的数据量，有效提升 查询效率。Dremel的列存储的不同之处在于它针对的并不是传统的关系数据，而是嵌套结构的数据。Dremel可以将一条条的嵌套结构的记录转换成列存储形式，查询时根据查询条件读取需要的列，然后进行条件过滤，输出时再将列组装成嵌套结构的记录输出，记录的正向和反向转换都通过高效的状态机实现。另 外，Dremel的多层查询树则借鉴了分布式搜索引擎的设计，查询树的根节点负责接收查询，并将查询分发到下一层节点，底层节点负责具体的数据读取和查询执行，然后将结果返回上层节点。&lt;/p&gt;
+
+&lt;p&gt;Impala其实就是Hadoop的Dremel，Impala使用的列存储格式是Parquet。Parquet实现了Dremel中的列存储，未来还将支持 Hive并添加字典编码、游程编码等功能。Impala的系统架构如图1所示。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/QueryComputing/Impala.jpg&quot; alt=&quot;Impala&quot; /&gt;&lt;/p&gt;
+
+&lt;center&gt;图1 Impala系统架构图&lt;/center&gt;
+
+
+&lt;p&gt;Impala使用了Hive的SQL接口（包括SELECT、 INSERT、Join等操作），但目前只实现了Hive的SQL语义的子集（例如尚未对UDF提供支持），表的元数据信息存储在Hive的 Metastore中。StateStore是Impala的一个子服务，用来监控集群中各个节点的健康状况，提供节点注册、错误检测等功能。 Impala在每个节点运行了一个后台服务Impalad，Impalad用来响应外部请求，并完成实际的查询处理。Impalad主要包含Query Planner、Query Coordinator和Query Exec Engine三个模块。QueryPalnner接收来自SQL APP和ODBC的查询，然后将查询转换为许多子查询，Query Coordinator将这些子查询分发到各个节点上，由各个节点上的Query Exec Engine负责子查询的执行，最后返回子查询的结果，这些中间结果经过聚集之后最终返回给用户。&lt;/p&gt;
+
+&lt;p&gt;在Cloudera的测试中，Impala的查询效率比Hive有数量级的提升。从技术角度上来看，Impala之所以能有好的性能，主要有以下几方面的原因：Impala不需要把中间结果写入磁盘，省掉了大量的I/O开销；省掉了MapReduce作业启动的开销。MapReduce启动task的速度很慢（默认每个心跳间隔是3秒钟），Impala直接通过相应的服务进程来进行作业调度，速度快了很多；Impala完全抛弃了MapReduce这个不太适合做SQL查询的范式，而是像Dremel一样借鉴了MPP并行数据库的思想另起炉灶，因此可做更多的查询优化，从而省掉不必要的shuffle、sort等开销；通过使用LLVM来统一编译运行时代码，避免了为支持通用编译而带来的不必要开销；用C++实现，做了很多有针对性的硬件优化，例如使用SSE指令；使用了支持Data locality的I/O调度机制，尽可能地将数据和计算分配在同一台机器上进行，减少了网络开销。&lt;/p&gt;
+
+&lt;h2&gt;其他&lt;/h2&gt;
+
+&lt;p&gt;作为一种查询语言，Sawzall是一种类型安全的脚本语言。由于Sawzall自身处理了很多问题，所以完成相同功能的代码就简化了非常多-与MapReduce的C++代码相比简化了10倍不止。Sawzall语法和表达式很大一部分都是从C照搬过来的；包括for循环，while循环，if语句等等都和C里边的很类似。定义部分借鉴了传统Pascal的模式。Sawzall有很多其他的传统特性，比如函数以及一个很广泛的选择基础函数库。在基础函数库中是给调用代码使用的国际化的函数，文档分析函数等等。&lt;/p&gt;
+
+&lt;p&gt;Shark是Spark上的数据仓库实现，它可以看做是Spark+Hive。它运行在Spark上，相对于在Hadoop上它运行Hive查询在内存上要快100倍，而在硬盘上快10倍。它在Spark上的架构图可以参考图2。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/QueryComputing/shark.jpg&quot; alt=&quot;shark&quot; /&gt;&lt;/p&gt;
+
+&lt;center&gt;图2 Shark架构图&lt;/center&gt;
+
+
+&lt;p&gt;Mahout是 Apache Software Foundation（ASF） 旗下的一个开源项目，提供一些可扩展的机器学习领域经典算法的实现，旨在帮助开发人员更加方便快捷地创建智能应用程序。Apache Mahout项目已经发展到了它的第三个年头，目前已经有了三个公共发行版本。Mahout包含许多实现，包括聚类、分类、推荐过滤、频繁子项挖掘。此外，通过使用 Apache Hadoop 库，Mahout 可以有效地扩展到云中。&lt;/p&gt;
+</content>
+   </entry>
+   
+   <entry>
+     <title>大数据图处理系统总结</title>
+     <link href="http://greeensy.github.io/Graph-computing"/>
+     <updated>2014-06-20T00:00:00+08:00</updated>
+     <id>http://greeensy.github.io/Graph-computing</id>
+     <content type="html">&lt;p&gt;图数据处理主要针对图数据的迭代计算。图广泛适应于许多领域的应用，如社交网络、Web 网络、生物数据分析和软件代码剽窃检测等。图模型正在互联网和社交网络领域得到越来越广泛的应用。随着真实世界中实体规模的扩张，导致对应的图数据规模迅速增长，因而构建高效的大规模图数据处理系统也成为了急需解决的问题。图计算的算法和机器学习算法类似，通常是复杂的、多阶段或迭代的计算。&lt;/p&gt;
+
+&lt;h2&gt;Kineograph&lt;/h2&gt;
+
+&lt;p&gt;Kineograph是一个分布式系统，在2012年被提出，它使用流式的输入数据来构造一个连续变化的图，可以捕捉数据中的关系。Kineograph支持图的挖掘算法，它用一个时代交换协议（epoch commit protocol）创建一系列的一致性快照，来适应那些在静态图中工作的图挖掘算法。为了适应图的连续更新，Kineograph引入了一个增量式的图计算引擎。&lt;/p&gt;
+
+&lt;p&gt;Kineograph主要着眼于三大挑战：第一，Kineograph必须支持连续更新，同时计算必须保证实时性，一般能1-2分钟内；第二，Kineograph需要包含一个图的机构，可以反映不同实体之间的关系，困难在于图很大，同时需要在分布式环境下保证一致性；第三，Kineograph需要在连续变化的图中支持图挖掘算法。&lt;/p&gt;
+
+&lt;p&gt;Kineograph和其他系统的关键不同在于图更新和图计算的分离。为了实现这种分离，Kineograph将图结构元数据和应用数据分开存储，图更新仅仅修改元数据。同时快照的方法使得图的更新和计算分离。&lt;/p&gt;
+
+&lt;p&gt;因此Kineograph需要支持一个分布式的内存的图存储系统，图引擎支持增量式的迭代的传播支持的图挖掘。这个分布式图存储定期产生可靠的一致性的快照，适应图挖掘算法。Kineograph的graph node有两个层次：计算层和存储层。前者负责数据计算，增量式的图挖掘；后者负责维护图数据，实现快照。存储层中分布式KV存储，一个图会被分割成确定数目（512）的逻辑分区，划分过程是按照点id的哈希。快照不会阻断更新的输入，ingest node分发和graph noede存储更新操作是可以同快照的创建重叠进行的。时代提交机制（Epoch Commit）提供了一种新的并发控制机制，由于图更新的简单性，不需要保证全局串行性。&lt;/p&gt;
+
+&lt;p&gt;Kineograph的工作流程如图1所示：&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/GraphComputing/Kineograph.jpg&quot; alt=&quot;Kineograph&quot; /&gt;&lt;/p&gt;
+
+&lt;center&gt;图1 Kineograph的执行流程说明&lt;/center&gt;
+
+
+&lt;ol&gt;
+&lt;li&gt;原始数据通过一系列ingest nodes进入Kineograph；&lt;/li&gt;
+&lt;li&gt;ingest node分析输入，将输入记录变成一系列操作，创建一个图更新操作的事务(transaction)并分配一个序列号，然后在graph noedes中根据这个号来分布式操作，在graph nodes中用邻接表存储点（这是图结构元数据），应用数据分开存储；&lt;/li&gt;
+&lt;li&gt;graph nodes从ingest nodes中存储图的更新，而后ingest node向progress table报告更新，progress table是一个全局的中心式服务；&lt;/li&gt;
+&lt;li&gt;有一个snapshooter定期命令所有graph有一个snapshooter定期命令所有graph node根据当前progress table中的序列号码向量做快照，这个向量是全局的逻辑时钟，定义时代（epoch）的结束；&lt;/li&gt;
+&lt;li&gt;graph nodes然后在这个时钟下计算和提交所有存储的本地图的更新，遵从一个预定义顺序，这个时代提交（epoch commit）结果是产生一个图结构的快照；&lt;/li&gt;
+&lt;li&gt;图结构的更新会在新的快照中触发增量式的图计算来更新相应的权值。&lt;/li&gt;
+&lt;/ol&gt;
+
+
+&lt;p&gt;计算的调度机制类似于GraphLab中的Partitioned scheduler，可以看做是Pregel的BSP和GraphLab的动态调度的混合。但是Kineograph不需要强制数据一致性，Kineograph中不允许写邻居，因此没有写写冲突，实验中也没有发现强一致性的需求。&lt;/p&gt;
+
+&lt;h2&gt;Google Pregel&lt;/h2&gt;
+
+&lt;p&gt;Pregel的论文是在2010年发表在SIGMOD上的，Pregel这个名称是为了纪念欧拉，在他提出的格尼斯堡七桥问题中，那些桥所在的河就叫Pregel。最初是为了解决PageRank计算问题，由于MapReduce并不适于这种场景，所以需要发展新的计算模型去完成这项计算任务，在这个过程中逐步提炼出一个通用的图计算框架，并用来解决更多的问题。&lt;/p&gt;
+
+&lt;p&gt;Pregel是一种面向图算法的分布式编程框架，采用迭代的计算模型：在每一轮，每个顶点处理上一轮收到的消息，并发出消息给其它顶点，并更新自身状态和拓扑结构（出、入边）等。&lt;/p&gt;
+
+&lt;p&gt;Pregel主要针对于大规模的图问题中面临的挑战：构建分布式框架，每次引入新算法或数据结构都需要花很大的精力；依赖分布式平台入MapReduce等，存在易用性和性能等问题，不适用于图算法（图算法更适合消息传递模型）；单机无法适应问题规模的扩大；现存的并行图模型系统：没有考虑到大规模系统比较重要的问题如容错性等。&lt;/p&gt;
+
+&lt;p&gt;Pregel计算模型基于BSP模型，所有节点构成有向图，采用消息传递模型。Pregel计算包含一连串的Supersteps，在每个Superstep，框架对所有的顶点调用一个用户定义的函数。该函数读取当前节点V 在上一个superstep中接收到的消息，向其它顶点（可以是任何节点，数目可变）发送消息（用于下一个superstep），更改V的状态和出边。在并行化方面，每个顶点独立地进行本地操作，所有的消息都是从第S步发送到第S+1步。图2通过一个简单的例子来说明这些基本概念：给定一个强连通图，图中每个顶点都包含一个值，它会将最大值传播到每个顶点。在每个超级步中，顶点会从接收到的消息中选出一个最大值，并将这个值传送给其所有的相邻顶点。当某个超级步中已经没有顶点更新其值，那么算法就宣告结束。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/GraphComputing/pregel.jpg&quot; alt=&quot;pregel&quot; /&gt;&lt;/p&gt;
+
+&lt;center&gt;图2 节点最大值的例子说明Pregel的计算过程&lt;/center&gt;
+
+
+&lt;p&gt;Pregel框架由集群管理系统进行作业调度：完成资源分配、作业重启和转移等，用GFS或BigTable进行持久存储。Pregel采用Master-slave结构，有一个节点（机器）扮演master角色，其它节点通过name service定位该顶点并在第一次时进行注册；master负责对顶点集合进行切分到各节点（也可以用户自己指定，考虑load balance等因素），根据顶ID哈希分配顶点到机器（一个机器可以有多个节点，通过name service进行逻辑区分）；节点间异步传输消息；通过checkpoint机制实行容错（更高级的容错通过confined recovery实现：log），节点向master汇报心跳（ping）维持状态。&lt;/p&gt;
+
+&lt;h2&gt;GraphLab&lt;/h2&gt;
+
+&lt;p&gt;GraphLab是一种新的ML（Machine Learning）框架，利用稀疏结构和通用的ML算法的计算模式。graphlab使ML人员能够轻松地设计和实现高效的可扩展并行算法通过将问题指定计算、数据依赖和调度组合在一起，并提供了GraphLab一种有效的的共享内存的实现，利用它构建了四种流行的机器学习算法的并行版本。GraphLab用于实现高效的正确的并行机器学习算法。在MR的模型上发展而成，可以简洁地表达异步迭代算法，有稀疏的计算依赖性，同时可以确保数据的一致性并实现高度并行性能。&lt;/p&gt;
+
+&lt;p&gt;Graphlab的主要贡献有：一个基于图的数据模型，模型展现了数据和计算过程中的依赖；一组并行访问的模式来保证一系列的并行一直性；一种复杂的模块调度机制；它实现和通过实验评估参数学习和图形算法模型的推论。&lt;/p&gt;
+
+&lt;p&gt;GraphLab data model包括两个部分：一个有向数据图和一个共享数据表。数据图需要满足稀疏计算结构和直接修改的程序状态，用户可以分配数据到顶点和边，分别表示为Dv和Du-&gt;v。共享数据表是一个关联map，kv结构。&lt;/p&gt;
+
+&lt;p&gt;GraphLab中有两种计算：update function，代表了本地计算，类似于map但是不同在于它可以允许访问和修改重叠；sync mechanism，代表了全局聚合，类似于reduce但是不同在于它和update同时进行。Sv代表v的邻居和update function的可操作范围。每个GraphLab程序可以有多个update，这与调度模型有关。在sync mechanism中，聚合了图中所有的顶点，用户提供一个key k，一个fold 函数（修改顶点数据），一个apply 函数（最终输出权值）和一个初始权值rk0给SDT，以及一个merge函数来构建并行树的合并剪枝。&lt;/p&gt;
+
+&lt;p&gt;GraphLab中提供了三种数据一致性：full consistency，保证Sv的数据不被读和修改；edge consistency，v的邻接边；vertex consistency，仅仅点v。GraphLab实现了一个sequential consistency，即如果串行是正确的则可以保证并行正确性，三个条件是：full是满足的，edge在update函数不修改邻接点的数据满足，vertex在update只修改顶点数据时满足。如图3所示。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/GraphComputing/GraphLab.jpg&quot; alt=&quot;GraphLab&quot; /&gt;&lt;/p&gt;
+
+&lt;center&gt;图3 GraphLab中的数据一致性对应的不同数据控制范围&lt;/center&gt;
+
+
+&lt;p&gt;GraphLab的update调度描述了顶点上update函数的执行顺序，用调度器来表示，这是一个动态的任务列表。Jacobi style 算法使用同步调度器，确保所有顶点同时更新，Gauss-Seidel style算法使用循环调度器确保所有顶点依次使用最近可用数据。GraphLab提供两类任务调度器，FIFO调度器只允许任务创建而不允许重新排序，优先调度器允许任务根据负载增加情况重排，同时提供了放松的版本。同时GraphLab提供了splash 调度器，沿着生成树来执行任务。GraphLab提供了一种集合调度器，使得用户可以自定义update调度，形如：(S1，f1)...S1表示执行f1的顶点集合，按照顺序执行，需要根据图的结构来构建执行计划。而对于结束条件的评估有两种：第一种根据调度器，在没有任务时给出结束信号；第二种根据用户提供的结束函数来测试SDT。&lt;/p&gt;
+
+&lt;h2&gt;PowerGraph&lt;/h2&gt;
+
+&lt;p&gt;PowerGraph是GraphLab的后续版，使得它有效地处理自然图形或幂律（power-law）图——这是有大量不良连接点和少量良好连接点的图，其中少数点的度很高，大多数的点的度较低，比如微博中的大V。PowerGraph提供了一种在分布式环境下的新的快速方式实现幂律图数据框架。&lt;/p&gt;
+
+&lt;p&gt;PowerGraph面向的是稀疏的有向图，同时同Pregel一样是顶点编程。PowerGraph虽然是GraphLab的后续版本，但是在一定程度也可以看做是GraphLab和Pregel的结合，它一方面沿用了GraphLab中的数据图（Data-graph）和共享内存（Shared-memory）的结构，另一个方面类似于Pregel使用了GAS模型，即：gather收集邻接点和边的信息，apply更新中心点的value，scatter向邻接的边发送新的value。gather阶段只读，apply对顶点只写，scatter对边只写。由于vertex计算会频繁调用Gather阶段操作，而大多数相邻的vertex的值其实并不会变化，为了减少计算量，PowerGraph提供了Delta Cache机制。同时，在顶点分割中PowerGraph跟据图的整体分布概率密度函数计算顶点切割的期望值，根据该期望值指导对顶点进行切割，并修改了传统的通信过程，并把其中随机选择一个作为master。&lt;/p&gt;
+
+&lt;p&gt;PowerGraph提供了同步和异步两种计算方式：&lt;/p&gt;
+
+&lt;p&gt;同步执行流程：&lt;/p&gt;
+
+&lt;ol&gt;
+&lt;li&gt;Excange message阶段，master接受来自mirror的消息；&lt;/li&gt;
+&lt;li&gt;Receive Message阶段，master接收上一轮Scatter发送的消息和mirror发送的消息，将有message的master激活， 对于激活的顶点，master通知mirror激活，并将vectex_program同步到mirrors；&lt;/li&gt;
+&lt;li&gt;Gather阶段，多线程并行gather， 谁先完成，多线程并行localgraph中的顶点，mirror将gather的结果到master；&lt;/li&gt;
+&lt;li&gt;Apply阶段，master执行apply，并将apply的结果同步到mirror&lt;/li&gt;
+&lt;li&gt;Scatter阶段，master和mirror基于新的顶点数据，更新边上数据，并以signal的形式通知相邻顶点。&lt;/li&gt;
+&lt;/ol&gt;
+
+
+&lt;p&gt;&lt;img src=&quot;/images/GraphComputing/PowerGraphSync.jpg&quot; alt=&quot;PowerGraph-sync&quot; /&gt;&lt;/p&gt;
+
+&lt;center&gt;图4 PowerGraph同步执行流程&lt;/center&gt;
+
+
+&lt;p&gt;异步执行流程：&lt;/p&gt;
+
+&lt;ol&gt;
+&lt;li&gt;在每一轮执行开始时，Master从全局的调度器(Sceduler)获取消息，获取消息后，master获得锁，并进入Locking状态。同时，master通知mirror获取锁，进入Locking状态。&lt;/li&gt;
+&lt;li&gt;master和mirror分别进行Gathering操作，mirror将gathering结果汇报给master，由master完成汇总。&lt;/li&gt;
+&lt;li&gt;master完成applying之后，将结果同步到mirror上。&lt;/li&gt;
+&lt;li&gt;master和mirror独立的执行scattering，执行完成之后释放锁进入None状态，等待新的任务到来。&lt;/li&gt;
+&lt;li&gt;mirror在scattering状态时，可能再次接收到来自master的locking请求，这种情况下，mirror在完成scattering后将不会释放锁直接进入下一轮任务。&lt;/li&gt;
+&lt;/ol&gt;
+
+
+&lt;p&gt;&lt;img src=&quot;/images/GraphComputing/PowerGraphAsync.jpg&quot; alt=&quot;PowerGraph-async&quot; /&gt;&lt;/p&gt;
+
+&lt;center&gt;图5 PowerGraph异步执行流程&lt;/center&gt;
+
+
+
+</content>
+   </entry>
+   
+ 
+</feed>
